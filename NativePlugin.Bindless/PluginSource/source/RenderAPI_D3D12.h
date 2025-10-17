@@ -29,12 +29,16 @@ public:
     virtual void SetCurrentBindlessOffset(void* eventData) override;
     static DXGI_FORMAT typeless_fmt_to_typed(DXGI_FORMAT format);
     
-    static uint32_t numAdditionalSrv() {
-        return 4096u;
+    static uint32_t numAdditionalTexSrv() {
+        return 2048u;
+    }
+
+    static uint32_t numAdditionalBufSrv() {
+        return 2048u;
     }
 
     static uint32_t numAdditionalSrvTotal() {
-        return numAdditionalSrv() * 4u;
+        return (numAdditionalTexSrv() * 4u) + (numAdditionalBufSrv() * 4u);
     }
 
     uint32_t srvBaseOffset;
