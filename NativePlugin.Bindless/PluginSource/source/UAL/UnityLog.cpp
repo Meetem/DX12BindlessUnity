@@ -35,7 +35,8 @@ void UnityLog::Debug(const char* format, ...) {
 	vsprintf_s(logData + prefixLength, (size_t)(UNITY_LOG_MAX_STR - 1 - prefixLength), format, args);
 	va_end(args);
 
-	logInstance->Log(kUnityLogTypeLog, logData, "", 0);
+	if(logInstance != nullptr)
+		logInstance->Log(kUnityLogTypeLog, logData, "", 0);
 
 	//OutputDebugStringA(logData);
 #endif
@@ -47,7 +48,8 @@ void UnityLog::Log(const char* format, ...) {
 	vsprintf_s(logData + prefixLength, (size_t)(UNITY_LOG_MAX_STR - 1 - prefixLength), format, args);
 	va_end(args);
 
-	logInstance->Log(kUnityLogTypeLog, logData, "", 0);
+	if(logInstance != nullptr)
+		logInstance->Log(kUnityLogTypeLog, logData, "", 0);
 
 #if _BINDLESS_DEBUG
 	OutputDebugStringA(logData);
@@ -61,7 +63,8 @@ void UnityLog::LogError(const char* format, ...) {
 	vsprintf_s(logData + prefixLength, (size_t)(UNITY_LOG_MAX_STR - 1 - prefixLength), format, args);
 	va_end(args);
 
-	logInstance->Log(kUnityLogTypeError, logData, "", 0);
+	if (logInstance != nullptr)
+		logInstance->Log(kUnityLogTypeError, logData, "", 0);
 
 #if _BINDLESS_DEBUG
 	OutputDebugStringA(logData);
@@ -75,7 +78,8 @@ void UnityLog::LogWarning(const char* format, ...) {
 	vsprintf_s(logData + prefixLength, (size_t)(UNITY_LOG_MAX_STR - 1 - prefixLength), format, args);
 	va_end(args);
 
-	logInstance->Log(kUnityLogTypeWarning, logData, "", 0);
+	if (logInstance != nullptr)
+		logInstance->Log(kUnityLogTypeWarning, logData, "", 0);
 
 #if _BINDLESS_DEBUG
 	OutputDebugStringA(logData);
@@ -92,7 +96,8 @@ void UnityLog::LogException(const char* fileName, int fileLine, const char* form
 	if (fileName == nullptr)
 		fileName = "";
 
-	logInstance->Log(kUnityLogTypeException, logData, fileName, fileLine);
+	if (logInstance != nullptr)
+		logInstance->Log(kUnityLogTypeException, logData, fileName, fileLine);
 
 #if _BINDLESS_DEBUG
 	OutputDebugStringA(logData);
