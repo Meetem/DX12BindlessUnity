@@ -18,5 +18,9 @@ namespace Meetem.Bindless
             
             bindlessTextures.SetBindlessTextures(0);
         }
+
+        void Update(){
+            
+        }
     }
 }
