@@ -14,22 +14,29 @@
 const char* prefix = "[Meetem.Bindless]: ";
 const unsigned prefixLength = 19u;
 
-char UnityLog::logData[UNITY_LOG_MAX_STR];
+thread_local static char logData[UNITY_LOG_MAX_STR];
 IUnityLog* UnityLog::logInstance;
+
+static void InitializeLogData() {
+	if (logData[0] == 0) {
+		for (unsigned i = 0; i < prefixLength; i++) {
+			logData[i] = prefix[i];
+		}
+	}
+}
 
 void UnityLog::Initialize(IUnityInterfaces* unityInterfaces) {
 	logInstance = unityInterfaces->Get<IUnityLog>();
-	for (int i = 0; i < UNITY_LOG_MAX_STR; i++) {
-		logData[i] = 0;
-	}
-
-	for (unsigned i = 0; i < prefixLength; i++) {
-		logData[i] = prefix[i];
-	}
+	InitializeLogData();
+	//for (int i = 0; i < UNITY_LOG_MAX_STR; i++) {
+	//	logData[i] = 0;
+	//}
 }
 
 void UnityLog::Debug(const char* format, ...) {
 #if _BINDLESS_DEBUG
+	InitializeLogData();
+
 	va_list args;
 	va_start(args, format);
 	vsprintf_s(logData + prefixLength, (size_t)(UNITY_LOG_MAX_STR - 1 - prefixLength), format, args);
@@ -42,6 +49,8 @@ void UnityLog::Debug(const char* format, ...) {
 }
 
 void UnityLog::Log(const char* format, ...) {
+	InitializeLogData();
+
 	va_list args;
 	va_start(args, format);
 	vsprintf_s(logData + prefixLength, (size_t)(UNITY_LOG_MAX_STR - 1 - prefixLength), format, args);
@@ -56,6 +65,8 @@ void UnityLog::Log(const char* format, ...) {
 }
 
 void UnityLog::LogError(const char* format, ...) {
+	InitializeLogData();
+
 	va_list args;
 	va_start(args, format);
 	vsprintf_s(logData + prefixLength, (size_t)(UNITY_LOG_MAX_STR - 1 - prefixLength), format, args);
@@ -70,6 +81,8 @@ void UnityLog::LogError(const char* format, ...) {
 }
 
 void UnityLog::LogWarning(const char* format, ...) {
+	InitializeLogData();
+
 	va_list args;
 	va_start(args, format);
 	vsprintf_s(logData + prefixLength, (size_t)(UNITY_LOG_MAX_STR - 1 - prefixLength), format, args);
@@ -84,6 +97,8 @@ void UnityLog::LogWarning(const char* format, ...) {
 }
 
 void UnityLog::LogException(const char* fileName, int fileLine, const char* format, ...) {
+	InitializeLogData();
+
 	va_list args;
 	va_start(args, format);
 	vsprintf_s(logData + prefixLength, (size_t)(UNITY_LOG_MAX_STR - 1 - prefixLength), format, args);

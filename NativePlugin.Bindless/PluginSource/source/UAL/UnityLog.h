@@ -21,7 +21,7 @@ public:
 
 	static void LogException(const char* fileName, int fileLine, const char* format, ...);
 protected:
-	static char logData[UNITY_LOG_MAX_STR];
+	//static char logData[UNITY_LOG_MAX_STR];
 	static IUnityLog* logInstance;
 };
 
