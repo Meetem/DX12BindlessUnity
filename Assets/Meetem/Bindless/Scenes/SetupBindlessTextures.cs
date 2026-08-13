@@ -18,5 +18,16 @@ namespace Meetem.Bindless
             
             bindlessTextures.SetBindlessTextures(0);
         }
+
+        protected void Update()
+        {
+            if (bindlessTextures == null)
+                bindlessTextures = new BindlessTexture[1024];
+            
+            for (int i = 0; i < testTextures.Length; i++)
+                bindlessTextures[i] = BindlessTexture.FromTexture2D(testTextures[i]);
+            
+            bindlessTextures.SetBindlessTextures(0);
+        }
     }
 }

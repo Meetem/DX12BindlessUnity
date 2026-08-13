@@ -1,11 +1,11 @@
 #pragma once
 
 // meetem hooks
-typedef HRESULT(*STDMETHODCALLTYPE D3D12_CreateDescriptorHeap)(ID3D12Device* device, _In_  const D3D12_DESCRIPTOR_HEAP_DESC* pDescriptorHeapDesc,
+typedef HRESULT(STDMETHODCALLTYPE* D3D12_CreateDescriptorHeap)(ID3D12Device* device, _In_  const D3D12_DESCRIPTOR_HEAP_DESC* pDescriptorHeapDesc,
     REFIID riid,
     _COM_Outptr_  void** ppvHeap);
 
-typedef void (*STDMETHODCALLTYPE D3D12_SetComputeRootDescriptorTable)(
+typedef void (STDMETHODCALLTYPE* D3D12_SetComputeRootDescriptorTable)(
     ID3D12CommandList* list,
     _In_  UINT RootParameterIndex,
     _In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor);
@@ -23,7 +23,7 @@ typedef void (STDMETHODCALLTYPE* D3D12_SetPipelineState)(
     _In_  ID3D12PipelineState* pPipelineState);
 
 typedef void (STDMETHODCALLTYPE* D3D12_SetDescriptorHeaps)(
-    ID3D12GraphicsCommandList10* This,
+    ID3D12GraphicsCommandList* This,
     _In_  UINT NumDescriptorHeaps,
     _In_reads_(NumDescriptorHeaps)  ID3D12DescriptorHeap* const* ppDescriptorHeaps);
 

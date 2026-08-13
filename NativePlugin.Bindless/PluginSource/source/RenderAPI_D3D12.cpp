@@ -10,6 +10,9 @@
 #include "UAL/UnityLog.h"
 
 #include <unordered_map>
+#include <unordered_set>
+
+std::unordered_map<void*, void*> hookedFunctions = {};
 
 // My data:
 // {CAD4DE65-63E8-4CF6-B82C-6F7EE6776333}
@@ -60,12 +63,24 @@ static void handle_hr_fatal(HRESULT hr, const char* error = "")
 	}
 }
 
-// #region Hooking
+#include "Hooks/InlineHook.h"
+
+template<typename T>
+static void** GetVTableEntryPtr(T* obj, int vtableOffset) {
+	size_t* vtable = *(size_t**)obj;
+	return (void**)((BYTE*)vtable + (vtableOffset));
+}
+
 static bool Unprotect(void* addr) {
 	const uint64_t pageSize = 4096;
 
-	DWORD oldProtect = 0;
-	auto protectResult = VirtualProtect((void*)((((size_t)addr) / pageSize) * pageSize), pageSize, PAGE_READWRITE, &oldProtect);
+	DWORD oldProtect[2] = {};
+	auto startPage1 = (void*)((((size_t)addr) / pageSize) * pageSize);
+	auto startPage2 = (void*)((size_t)startPage1 + pageSize);
+
+	auto protectResult = VirtualProtect(startPage1, pageSize, PAGE_READWRITE, &oldProtect[0]);
+	protectResult &= VirtualProtect(startPage2, pageSize, PAGE_READWRITE, &oldProtect[1]);
+
 	if (protectResult == 0) {
 		UnityLog::LogError("VirtualProtect failed, result: %d, old protect: %p\n", protectResult, (void*)(size_t)oldProtect);
 		return false;
@@ -74,14 +89,32 @@ static bool Unprotect(void* addr) {
 	return true;
 }
 
-template<typename T>
-static void** GetVTableEntryPtr(T* obj, int vtableOffset) {
-	size_t* vtable = *(size_t**)obj;
-	return (void**)((BYTE*)vtable + (vtableOffset));
-}
-
+#if 1
 template<typename T>
 static void* Hook(T* obj, int vtableOffset, void* newFunction) {
+	auto pptr = GetVTableEntryPtr<T>(obj, vtableOffset);
+	auto func = *pptr;
+
+	auto foundTrampoline = hookedFunctions.find(func);
+	if (foundTrampoline == hookedFunctions.end()) {
+		UnityLog::Log("Hooking %p of %p\n", (void*)func, (void*)obj);
+
+		InlineHookData tempData = {};
+		if (!InlineHooks::InstallInlineHook(func, newFunction, &tempData)) {
+			UnityLog::LogError("FAILED TO HOOK %p", func);
+			abort();
+		}
+
+		hookedFunctions[func] = tempData.trampoline;
+		return tempData.trampoline;
+	}
+	
+	return foundTrampoline->second;
+}
+#else
+template<typename T>
+static void* Hook(T* obj, int vtableOffset, void* newFunction)
+{
 	auto pptr = GetVTableEntryPtr<T>(obj, vtableOffset);
 	auto old = *pptr;
 	if (Unprotect(pptr)) {
@@ -90,7 +123,7 @@ static void* Hook(T* obj, int vtableOffset, void* newFunction) {
 
 	return old;
 }
-// #endregion
+#endif
 
 #include "D3D12Hooks.h"
 
@@ -202,6 +235,11 @@ static inline bool TryGetBindlessData(ID3D12Object* iface, T& outputSig) {
 	return !FAILED(res) && dsize == sizeof(T);
 }
 
+static inline bool IsCommandStateHadBindless(CommandListStateData dt) {
+	return (dt.bindlessCmpSrvDescId != NoBindless) | (dt.bindlessGfxSrvDescId != NoBindless) | (dt.isInHookedCmpRootSig) | (dt.isInHookedGfxRootSig) | (dt.isHookedCmpDescSetAssigned) | (dt.isHookedGfxDescSetAssigned) | (dt.assignedHookedHeap);
+}
+
+#if 0
 extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateGraphicsPipelineState(
 		ID3D12Device* This,
 		_In_  const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc,
@@ -319,7 +357,7 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
 			for (unsigned x = 0; x < v.NumDescriptorRanges; x++) {
 				auto& dr = writableDescriptors[x];
 
-				UnityLog::Debug("DescriptorTable: %d, type: %d, base register: %d, numDescriptors: %d, offset: %d\n",
+				UnityLog::Log("DescriptorTable: %d, type: %d, base register: %d, numDescriptors: %d, offset: %d\n",
 					x, dr.RangeType, dr.BaseShaderRegister, dr.NumDescriptors, dr.OffsetInDescriptorsFromTableStart);
 
 				if (dr.RegisterSpace != 0 || dr.RangeType != D3D12_DESCRIPTOR_RANGE_TYPE_SRV) {
@@ -372,8 +410,8 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
 	if (ignore || !needPlaceSrv) {
 		FreeDeepCopy(&rootSig);
 		auto ret = OrigCreateRootSignature(This, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid, ppvRootSignature);
-		UnityLog::Debug("Created root desc [n] %p, %p\n", *ppvRootSignature, (void*)(size_t)(ret));
-
+		UnityLog::Log("Created root desc [n] %p, %p\n", *ppvRootSignature, (void*)(size_t)(ret));
+		
 		return ret;
 	}
 
@@ -448,30 +486,31 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
 extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12Device * device, _In_  D3D12_DESCRIPTOR_HEAP_DESC * pDescriptorHeapDesc,
 	REFIID riid,
 	_COM_Outptr_  void** ppvHeap) {
-
-	if (pDescriptorHeapDesc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) {
+	D3D12_DESCRIPTOR_HEAP_DESC pDescCopy = *pDescriptorHeapDesc;
+	
+	if (pDescCopy.Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) {
 		uint32_t additional = RenderAPI_D3D12::numAdditionalSrvTotal();
 		bool hooked = false;
 
-		if (pDescriptorHeapDesc->NumDescriptors >= mainDescHeapMagic) {
+		if (pDescCopy.NumDescriptors >= mainDescHeapMagic) {
 			hooked = true;
-			if (pDescriptorHeapDesc->NumDescriptors + additional > absoluteMaxDescriptors) {
-				pDescriptorHeapDesc->NumDescriptors = absoluteMaxDescriptors;
-				myD3D12->srvBaseOffset = pDescriptorHeapDesc->NumDescriptors - additional;
+			if (pDescCopy.NumDescriptors + additional > absoluteMaxDescriptors) {
+				pDescCopy.NumDescriptors = absoluteMaxDescriptors;
+				myD3D12->srvBaseOffset = pDescCopy.NumDescriptors - additional;
 			}
 			else {
-				myD3D12->srvBaseOffset = pDescriptorHeapDesc->NumDescriptors;
-				pDescriptorHeapDesc->NumDescriptors += additional;
+				myD3D12->srvBaseOffset = pDescCopy.NumDescriptors;
+				pDescCopy.NumDescriptors += additional;
 			}
 		}
 
-		UnityLog::Log("Creating CBV/SRV/UAV descriptor set with count %d with type %d (%d additional entries)\n", (int)pDescriptorHeapDesc->NumDescriptors, (int)pDescriptorHeapDesc->Type, additional);
+		UnityLog::Log("Creating CBV/SRV/UAV descriptor set with count %d with type %d (%d additional entries)\n", (int)pDescCopy.NumDescriptors, (int)pDescCopy.Type, additional);
 
-		auto res = OrigCreateDescriptorHeap(device, pDescriptorHeapDesc, riid, ppvHeap);
-		if (FAILED(res)) {
+		auto res = OrigCreateDescriptorHeap(device, &pDescCopy, riid, ppvHeap);
+		if (FAILED(res) || ppvHeap == nullptr) {
 			UnityLog::LogError("Can't create new descriptor heap: %p\n", (void*)(size_t)res);
 		}
-		else {
+		else if (ppvHeap != nullptr) {
 			auto ptr = (ID3D12DescriptorHeap*)*ppvHeap;
 			if (ptr != nullptr) {
 				myD3D12->srvDescriptorHeaps.push_back(ptr);
@@ -480,16 +519,14 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12De
 					myD3D12->hookedDescriptorHeaps.push_back(ptr);
 				}
 			}
+		} else {
+			UnityLog::LogError("Can't create new descriptor heap, reason unknown.\n");
 		}
 
 		return res;
 	}
 
-	return OrigCreateDescriptorHeap(device, pDescriptorHeapDesc, riid, ppvHeap);
-}
-
-static inline bool IsCommandStateHadBindless(CommandListStateData dt) {
-	return (dt.bindlessCmpSrvDescId != NoBindless) | (dt.bindlessGfxSrvDescId != NoBindless) | (dt.isInHookedCmpRootSig) | (dt.isInHookedGfxRootSig) | (dt.isHookedCmpDescSetAssigned) | (dt.isHookedGfxDescSetAssigned) | (dt.assignedHookedHeap);
+	return OrigCreateDescriptorHeap(device, &pDescCopy, riid, ppvHeap);
 }
 
 static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(ID3D12GraphicsCommandList* This,
@@ -544,37 +581,252 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootSignature(ID3D12Gr
 	OrigSetComputeRootSignature(This, pRootSignature);
 }
 
-/*
-static void HookedSetPipelineState(ID3D12GraphicsCommandList* This,
-	_In_  ID3D12PipelineState* pPipelineState) {
-
-	HookedRootSignature d{};
-	auto hasPipelineHook = TryGetBindlessData(pPipelineState, d);
-
+extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(ID3D12GraphicsCommandList* This,
+	_In_  UINT NumDescriptorHeaps,
+	_In_reads_(NumDescriptorHeaps)  ID3D12DescriptorHeap* const* ppDescriptorHeaps) {
+	
 	auto dt = GetCommandListState(This);
+	UnityLog::Debug("Setting descriptor heaps: %d %d %d\n", NumDescriptorHeaps, dt.isInHookedCmpRootSig, dt.isInHookedGfxRootSig);
+	if (myD3D12->hookedDescriptorHeaps.empty()) {
+		UnityLog::LogWarning("SetDescriptorHeaps is called, but no srvHeap is set.\n");
+		OrigSetDescriptorHeaps(This, NumDescriptorHeaps, ppDescriptorHeaps);
+		return;
+	}
 
-	if (!hasPipelineHook) {
-		if (IsCommandStateHadBindless(dt))
-		{
-			dt.isInHookedPipeline = false;
+	ID3D12DescriptorHeap* heaps[128];
+
+	if (ppDescriptorHeaps == nullptr || NumDescriptorHeaps == 0u) {
+		if (IsCommandStateHadBindless(dt)) {
 			dt.isHookedCmpDescSetAssigned = false;
-			dt.isHookedHeapAssigned = false;
-			dt.bindlessSrvDescId = NoBindless;
+			dt.isHookedGfxDescSetAssigned = false;
+			dt.assignedHookedHeap = 0;
 			SetCommandListState(This, dt);
 		}
-	}
-	else {
-		dt.isInHookedPipeline = true;
-		dt.isHookedCmpDescSetAssigned = false;
-		dt.isHookedHeapAssigned = false;
-		dt.bindlessSrvDescId = (uint8_t)(d.descriptorId + 1);
-		SetCommandListState(This, dt);
+
+		return OrigSetDescriptorHeaps(This, NumDescriptorHeaps, ppDescriptorHeaps);
 	}
 
-	//UnityLog::Debug("Setting pipeline state: %d\n", hasPipelineHook);
-	return OrigSetPipelineState(This, pPipelineState);
+	if (true || dt.isInHookedCmpRootSig || dt.isInHookedGfxRootSig) {
+		unsigned assigned = 0;
+		bool hasSrvHeap = false;
+
+		const auto& srvDescHeaps = myD3D12->srvDescriptorHeaps;
+		const auto& hookedHeaps = myD3D12->hookedDescriptorHeaps;
+
+		for (int i = 0; i < NumDescriptorHeaps; i++) {
+			auto h = ppDescriptorHeaps[i];
+			heaps[i] = h;
+
+			if (h != nullptr) {
+				for (auto v : srvDescHeaps) {
+					if (v == h) {
+						hasSrvHeap = true;
+					}
+				}
+
+				for (unsigned k = 0; k < hookedHeaps.size(); k++) {
+					auto v = hookedHeaps[k];
+					if (v == h) {
+						assigned = k + 1;
+					}
+				}
+			}
+		}
+
+		if (!assigned && !hasSrvHeap) {
+			heaps[NumDescriptorHeaps] = hookedHeaps[0];
+			NumDescriptorHeaps++;
+			assigned = 1;
+		}
+
+		dt.assignedHookedHeap = assigned;
+		dt.isHookedCmpDescSetAssigned = false;
+		dt.isHookedGfxDescSetAssigned = false;
+		SetCommandListState(This, dt);
+		return OrigSetDescriptorHeaps(This, NumDescriptorHeaps, heaps);
+	}
+
+	if (IsCommandStateHadBindless(dt)) {
+		dt.isHookedCmpDescSetAssigned = false;
+		dt.isHookedGfxDescSetAssigned = false;
+		dt.assignedHookedHeap = 0;
+		SetCommandListState(This, dt);
+	}
+	
+	return OrigSetDescriptorHeaps(This, NumDescriptorHeaps, ppDescriptorHeaps);
 }
-*/
+
+extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootDescriptorTable(ID3D12CommandList* list,
+	_In_  UINT RootParameterIndex,
+	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) {
+
+	auto d3d = myD3D12;
+
+	auto gfxList = (ID3D12GraphicsCommandList*)list;
+
+	// This will never return that we are in bindless for non-graphics list.
+	auto dt = GetCommandListState(gfxList);
+	UnityLog::Debug("Set compute root descriptor table: %d %d %d %d\n", RootParameterIndex, dt.isInHookedCmpRootSig, dt.assignedHookedHeap, dt.bindlessCmpSrvDescId);
+
+	//sprintf(out, "Setting compute root descriptor %d\n", (int)RootParameterIndex);
+	//OutputDebugStringA(out);
+	OrigSetComputeRootDescriptorTable(list, RootParameterIndex, BaseDescriptor);
+
+	if (myD3D12->hookedDescriptorHeaps.empty()) {
+		UnityLog::LogWarning("SetComputeRootDescriptorTable is called, but no srvHeap is set.\n");
+		return;
+	}
+
+	if (dt.isInHookedCmpRootSig && dt.assignedHookedHeap && (dt.bindlessCmpSrvDescId != NoBindless))
+	{
+		auto targetIdx = dt.bindlessCmpSrvDescId - 1;
+
+		if (RootParameterIndex == (targetIdx) || !dt.isHookedCmpDescSetAssigned) {
+			dt.isHookedCmpDescSetAssigned = true;
+			SetCommandListState(gfxList, dt);
+
+			UnityLog::Debug("Set compute root descriptor table for bindless: (hooked %d) -> %d with offset %d\n", RootParameterIndex, targetIdx, myD3D12->srvBaseOffset);
+
+			auto assignedHeap = myD3D12->hookedDescriptorHeaps[dt.assignedHookedHeap - 1];
+			CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(assignedHeap->GetGPUDescriptorHandleForHeapStart());
+			gpuHandle.Offset(myD3D12->srvBaseOffset * myD3D12->srvIncrement);
+			gpuHandle.Offset(myD3D12->getCurrentOffset() * myD3D12->srvIncrement);
+
+			OrigSetComputeRootDescriptorTable(list, targetIdx, gpuHandle);
+		}
+		// Unity assigned descriptor
+		else if (RootParameterIndex == (targetIdx)) {
+			UnityLog::LogWarning("Unity forcefully unset bindless\n");
+			dt.isHookedCmpDescSetAssigned = false;
+			SetCommandListState(gfxList, dt);
+		}
+	}
+}
+
+extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(ID3D12GraphicsCommandList* list,
+	_In_  UINT RootParameterIndex,
+	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) {
+
+	auto d3d = myD3D12;
+	auto gfxList = (ID3D12GraphicsCommandList*)list;
+
+	// This will never return that we are in bindless for non-graphics list.
+	auto dt = GetCommandListState(gfxList);
+	UnityLog::Debug("Set graphics root descriptor table: %d %d %d %d\n", RootParameterIndex, dt.isInHookedGfxRootSig, dt.assignedHookedHeap, dt.bindlessGfxSrvDescId);
+
+	//sprintf(out, "Setting compute root descriptor %d\n", (int)RootParameterIndex);
+	//OutputDebugStringA(out);
+	OrigSetGraphicsRootDescriptorTable(list, RootParameterIndex, BaseDescriptor);
+
+	if (myD3D12->hookedDescriptorHeaps.empty()) {
+		UnityLog::LogWarning("SetGraphicsRootDescriptorTable is called, but no srvHeap is set.\n");
+		return;
+	}
+
+	if ((dt.isInHookedGfxRootSig)
+		// For graphics Unity set descriptor heaps somewhere else, 
+		// without assigning the heaps after root sig changed
+		& (dt.assignedHookedHeap)
+		& (dt.bindlessGfxSrvDescId != NoBindless))
+	{
+		auto targetIdx = dt.bindlessGfxSrvDescId - 1;
+
+		if (RootParameterIndex == (targetIdx) || !dt.isHookedGfxDescSetAssigned) {
+			dt.isHookedGfxDescSetAssigned = true;
+			SetCommandListState(gfxList, dt);
+
+			UnityLog::Debug("Set graphics root descriptor table for bindless: (hooked %d) -> %d with offset %d\n", RootParameterIndex, targetIdx, myD3D12->srvBaseOffset);
+
+			auto assignedHeap = myD3D12->hookedDescriptorHeaps[dt.assignedHookedHeap - 1];
+			CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(assignedHeap->GetGPUDescriptorHandleForHeapStart());
+			gpuHandle.Offset(myD3D12->srvBaseOffset * myD3D12->srvIncrement);
+			gpuHandle.Offset(myD3D12->getCurrentOffset() * myD3D12->srvIncrement);
+
+			OrigSetGraphicsRootDescriptorTable(list, targetIdx, gpuHandle);
+		}
+	}
+}
+#else
+extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateGraphicsPipelineState(
+	ID3D12Device* This,
+	_In_  const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc,
+	REFIID riid,
+	_COM_Outptr_  void** ppPipelineState
+)
+{
+	auto res = OrigCreateGraphicsPipelineState(This, pDesc, riid, ppPipelineState);
+	return res;
+}
+
+extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateComputePipelineState(
+	ID3D12Device* This,
+	_In_  const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc,
+	REFIID riid,
+	_COM_Outptr_  void** ppPipelineState)
+{
+	auto res = OrigCreateComputePipelineState(This, pDesc, riid, ppPipelineState);
+	return res;
+}
+
+extern "C" static HRESULT STDMETHODCALLTYPE Hooked_Reset(
+	ID3D12GraphicsCommandList1* This,
+	_In_  ID3D12CommandAllocator* pAllocator,
+	_In_opt_  ID3D12PipelineState* pInitialState
+)
+{
+	return OrigReset(This, pAllocator, pInitialState);
+}
+
+extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
+	ID3D12Device* This,
+	_In_  UINT nodeMask,
+	_In_reads_(blobLengthInBytes)  const void* pBlobWithRootSignature,
+	_In_  SIZE_T blobLengthInBytes,
+	REFIID riid,
+	_COM_Outptr_  void** ppvRootSignature) {
+	auto ret = OrigCreateRootSignature(This, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid, ppvRootSignature);
+	return ret;
+}
+
+extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12Device* device, _In_  D3D12_DESCRIPTOR_HEAP_DESC* pDescriptorHeapDesc,
+	REFIID riid,
+	_COM_Outptr_  void** ppvHeap) {
+	return OrigCreateDescriptorHeap(device, pDescriptorHeapDesc, riid, ppvHeap);
+}
+
+static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(ID3D12GraphicsCommandList* This,
+	_In_opt_  ID3D12RootSignature* pRootSignature)
+{
+	OrigSetGraphicsRootSignature(This, pRootSignature);
+}
+
+extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootSignature(ID3D12GraphicsCommandList* This,
+	_In_opt_  ID3D12RootSignature* pRootSignature)
+{
+	OrigSetComputeRootSignature(This, pRootSignature);
+}
+
+extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(ID3D12GraphicsCommandList* This,
+	_In_  UINT NumDescriptorHeaps,
+	_In_reads_(NumDescriptorHeaps)  ID3D12DescriptorHeap* const* ppDescriptorHeaps)
+{
+	return OrigSetDescriptorHeaps(This, NumDescriptorHeaps, ppDescriptorHeaps);
+}
+
+extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootDescriptorTable(ID3D12CommandList* list,
+	_In_  UINT RootParameterIndex,
+	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor)
+{
+	OrigSetComputeRootDescriptorTable(list, RootParameterIndex, BaseDescriptor);
+}
+
+extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(ID3D12GraphicsCommandList* list,
+	_In_  UINT RootParameterIndex,
+	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) 
+{
+	OrigSetGraphicsRootDescriptorTable(list, RootParameterIndex, BaseDescriptor);
+}
+#endif
 
 extern unsigned __api_call_counter;
 
@@ -646,209 +898,6 @@ int RenderAPI_D3D12::SetBindlessTextures(int offset, unsigned numTextures, Bindl
 	return 1;
 }
 
-extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(ID3D12GraphicsCommandList10* This,
-	_In_  UINT NumDescriptorHeaps,
-	_In_reads_(NumDescriptorHeaps)  ID3D12DescriptorHeap* const* ppDescriptorHeaps) {
-
-	auto dt = GetCommandListState(This);
-	UnityLog::Debug("Setting descriptor heaps: %d % %dd\n", NumDescriptorHeaps, dt.isInHookedCmpRootSig, dt.isInHookedGfxRootSig);
-	if (myD3D12->hookedDescriptorHeaps.empty()) {
-		UnityLog::LogWarning("SetDescriptorHeaps is called, but no srvHeap is set.\n");
-		OrigSetDescriptorHeaps(This, NumDescriptorHeaps, ppDescriptorHeaps);
-		return;
-	}
-
-	ID3D12DescriptorHeap* heaps[128];
-
-	if (ppDescriptorHeaps == nullptr || NumDescriptorHeaps == 0u) {
-		if (IsCommandStateHadBindless(dt)) {
-			dt.isHookedCmpDescSetAssigned = false;
-			dt.isHookedGfxDescSetAssigned = false;
-			dt.assignedHookedHeap = 0;
-			SetCommandListState(This, dt);
-		}
-
-		return OrigSetDescriptorHeaps(This, NumDescriptorHeaps, ppDescriptorHeaps);
-	}
-
-	if (true || dt.isInHookedCmpRootSig || dt.isInHookedGfxRootSig) {
-		unsigned assigned = 0;
-		bool hasSrvHeap = false;
-
-		const auto& srvDescHeaps = myD3D12->srvDescriptorHeaps;
-		const auto& hookedHeaps = myD3D12->hookedDescriptorHeaps;
-
-		for (int i = 0; i < NumDescriptorHeaps; i++) {
-			auto h = ppDescriptorHeaps[i];
-			heaps[i] = h;
-
-			if (h != nullptr) {
-				for (auto v : srvDescHeaps) {
-					if (v == h) {
-						hasSrvHeap = true;
-					}
-				}
-
-				for (unsigned k = 0; k < hookedHeaps.size(); k++) {
-					auto v = hookedHeaps[k];
-					if (v == h) {
-						assigned = k + 1;
-					}
-				}
-			}
-		}
-
-		if (!assigned && !hasSrvHeap) {
-			heaps[NumDescriptorHeaps] = hookedHeaps[0];
-			NumDescriptorHeaps++;
-			assigned = 1;
-		}
-
-		dt.assignedHookedHeap = assigned;
-		dt.isHookedCmpDescSetAssigned = false;
-		dt.isHookedGfxDescSetAssigned = false;
-		SetCommandListState(This, dt);
-		return OrigSetDescriptorHeaps(This, NumDescriptorHeaps, heaps);
-	}
-
-	if (IsCommandStateHadBindless(dt)) {
-		dt.isHookedCmpDescSetAssigned = false;
-		dt.isHookedGfxDescSetAssigned = false;
-		dt.assignedHookedHeap = 0;
-		SetCommandListState(This, dt);
-	}
-
-	return OrigSetDescriptorHeaps(This, NumDescriptorHeaps, ppDescriptorHeaps);
-}
-
-extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootDescriptorTable(ID3D12CommandList* list,
-	_In_  UINT RootParameterIndex,
-	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) {
-
-	auto d3d = myD3D12;
-
-	auto gfxList = (ID3D12GraphicsCommandList*)list;
-
-	// This will never return that we are in bindless for non-graphics list.
-	auto dt = GetCommandListState(gfxList);
-	UnityLog::Debug("Set compute root descriptor table: %d %d %d %d\n", RootParameterIndex, dt.isInHookedCmpRootSig, dt.assignedHookedHeap, dt.bindlessCmpSrvDescId);
-
-	if (myD3D12->hookedDescriptorHeaps.empty()) {
-		UnityLog::LogWarning("SetComputeRootDescriptorTable is called, but no srvHeap is set.\n");
-		return;
-	}
-
-	//sprintf(out, "Setting compute root descriptor %d\n", (int)RootParameterIndex);
-	//OutputDebugStringA(out);
-	OrigSetComputeRootDescriptorTable(list, RootParameterIndex, BaseDescriptor);
-
-	if (dt.isInHookedCmpRootSig && dt.assignedHookedHeap && (dt.bindlessCmpSrvDescId != NoBindless))
-	{
-		auto targetIdx = dt.bindlessCmpSrvDescId - 1;
-
-		if (RootParameterIndex == (targetIdx) || !dt.isHookedCmpDescSetAssigned) {
-			dt.isHookedCmpDescSetAssigned = true;
-			SetCommandListState(gfxList, dt);
-
-			UnityLog::Debug("Set compute root descriptor table for bindless: (hooked %d) -> %d with offset %d\n", RootParameterIndex, targetIdx, myD3D12->srvBaseOffset);
-
-			auto assignedHeap = myD3D12->hookedDescriptorHeaps[dt.assignedHookedHeap - 1];
-			CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(assignedHeap->GetGPUDescriptorHandleForHeapStart());
-			gpuHandle.Offset(myD3D12->srvBaseOffset * myD3D12->srvIncrement);
-			gpuHandle.Offset(myD3D12->getCurrentOffset() * myD3D12->srvIncrement);
-
-			OrigSetComputeRootDescriptorTable(list, targetIdx, gpuHandle);
-		}
-		// Unity assigned descriptor
-		else if (RootParameterIndex == (targetIdx)) {
-			UnityLog::LogWarning("Unity forcefully unset bindless\n");
-			dt.isHookedCmpDescSetAssigned = false;
-			SetCommandListState(gfxList, dt);
-		}
-	}
-}
-
-extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(ID3D12GraphicsCommandList* list,
-	_In_  UINT RootParameterIndex,
-	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) {
-
-	auto d3d = myD3D12;
-	auto gfxList = (ID3D12GraphicsCommandList*)list;
-
-	// This will never return that we are in bindless for non-graphics list.
-	auto dt = GetCommandListState(gfxList);
-	UnityLog::Debug("Set graphics root descriptor table: %d %d %d %d\n", RootParameterIndex, dt.isInHookedGfxRootSig, dt.assignedHookedHeap, dt.bindlessGfxSrvDescId);
-
-	if (myD3D12->hookedDescriptorHeaps.empty()) {
-		UnityLog::LogWarning("SetGraphicsRootDescriptorTable is called, but no srvHeap is set.\n");
-		return;
-	}
-
-	//sprintf(out, "Setting compute root descriptor %d\n", (int)RootParameterIndex);
-	//OutputDebugStringA(out);
-	OrigSetGraphicsRootDescriptorTable(list, RootParameterIndex, BaseDescriptor);
-
-	if ((dt.isInHookedGfxRootSig) 
-		// For graphics Unity set descriptor heaps somewhere else, 
-		// without assigning the heaps after root sig changed
-		//& (dt.assignedHookedHeap) 
-		& (dt.bindlessGfxSrvDescId != NoBindless))
-	{
-		auto targetIdx = dt.bindlessGfxSrvDescId - 1;
-
-		if (RootParameterIndex == (targetIdx) || !dt.isHookedGfxDescSetAssigned) {
-			dt.isHookedGfxDescSetAssigned = true;
-			SetCommandListState(gfxList, dt);
-
-			UnityLog::Debug("Set graphics root descriptor table for bindless: (hooked %d) -> %d with offset %d\n", RootParameterIndex, targetIdx, myD3D12->srvBaseOffset);
-
-			auto assignedHeap = myD3D12->hookedDescriptorHeaps[dt.assignedHookedHeap - 1];
-			CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(assignedHeap->GetGPUDescriptorHandleForHeapStart());
-			gpuHandle.Offset(myD3D12->srvBaseOffset * myD3D12->srvIncrement);
-			gpuHandle.Offset(myD3D12->getCurrentOffset() * myD3D12->srvIncrement);
-
-			OrigSetGraphicsRootDescriptorTable(list, targetIdx, gpuHandle);
-		}
-	}
-
-	/*
-	// This will never return that we are in bindless for non-graphics list.
-	auto dt = GetCommandListState(gfxList);
-	UnityLog::Debug("Set graphics root descriptor table: %d (sig: %d, heap: %d)\n", RootParameterIndex, dt.isInHookedRootSig, dt.isHookedHeapAssigned);
-
-	if (dt.isInHookedRootSig
-		// For graphics Unity set descriptor heaps somewhere else, 
-		// without assigning the heaps after root sig changed
-		// & dt.isHookedHeapAssigned 
-		& (dt.bindlessSrvDescId != NoBindless))
-	{
-		auto targetIdx = dt.bindlessSrvDescId - 1;
-
-		if (!dt.isHookedCmpDescSetAssigned) {
-			dt.isHookedCmpDescSetAssigned = true;
-			SetCommandListState(gfxList, dt);
-
-			UnityLog::Debug("Set graphics root descriptor table for bindless: (hooked %d) -> %d with offset %d\n", RootParameterIndex, targetIdx, myD3D12->srvBaseOffset);
-
-			CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(myD3D12->srvHeap->GetGPUDescriptorHandleForHeapStart());
-			gpuHandle.Offset(myD3D12->srvBaseOffset * myD3D12->srvIncrement);
-
-			OrigSetGraphicsRootDescriptorTable(list, targetIdx, gpuHandle);
-		}
-		// Unity assigned descriptor
-		else if (RootParameterIndex == (targetIdx)) {
-			UnityLog::LogWarning("Unity forcefully unset bindless\n");
-			dt.isHookedCmpDescSetAssigned = false;
-			SetCommandListState(gfxList, dt);
-		}
-	}
-
-	//sprintf(out, "Setting compute root descriptor %d\n", (int)RootParameterIndex);
-	//OutputDebugStringA(out);
-	OrigSetGraphicsRootDescriptorTable(list, RootParameterIndex, BaseDescriptor);
-	*/
-}
-
 static bool d3d12hookedCmdList = false;
 
 void RenderAPI_D3D12::HookCommandListObject(ID3D12GraphicsCommandList* cmdList) {
@@ -916,8 +965,6 @@ void RenderAPI_D3D12::ProcessDeviceEvent(UnityGfxDeviceEventType type, IUnityInt
 		return;
 
 	if (type == kUnityGfxDeviceEventShutdown) {
-		//vtableEntryPtr = GetVTableEntryPtr<ID3D12Device>(dev, 14);
-		//*vtableEntryPtr = origCreateDescriptorHeap;
 		release_resources();
 		return;
 	}
@@ -947,8 +994,8 @@ void RenderAPI_D3D12::initialize_and_create_resources()
 	), "Can't create command list");
 
 	HookCommandListObject((ID3D12GraphicsCommandList*)commandList);
-	commandList->Release();
-	commandAllocator->Release();
+	//commandList->Release();
+	//commandAllocator->Release();
 }
 
 void RenderAPI_D3D12::release_resources()

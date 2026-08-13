@@ -19,6 +19,7 @@
     <ClInclude Include="..\..\source\D3D12Hooks.h" />
     <ClInclude Include="..\..\source\gl3w\gl3w.h" />
     <ClInclude Include="..\..\source\gl3w\glcorearb.h" />
+    <ClInclude Include="..\..\source\Hooks\InlineHook.h" />
     <ClInclude Include="..\..\source\PlatformBase.h" />
     <ClInclude Include="..\..\source\RenderAPI.h" />
     <ClInclude Include="..\..\source\RenderAPI_D3D12.h" />
@@ -34,6 +35,7 @@
   <ItemGroup>
     <ClCompile Include="..\..\source\D3D12Hook_Offsets.c" />
     <ClCompile Include="..\..\source\gl3w\gl3w.c" />
+    <ClCompile Include="..\..\source\Hooks\DX12_Win32Hooks.cpp" />
     <ClCompile Include="..\..\source\RenderAPI.cpp" />
     <ClCompile Include="..\..\source\RenderAPI_D3D12.cpp" />
     <ClCompile Include="..\..\source\RenderingPlugin.cpp" />
@@ -53,7 +55,7 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
@@ -64,7 +66,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='DebugHDRP|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">

@@ -33,6 +33,7 @@
     </ClInclude>
     <ClInclude Include="..\..\source\RenderAPI_D3D12.h" />
     <ClInclude Include="..\..\source\D3D12Hooks.h" />
+    <ClInclude Include="..\..\source\Hooks\InlineHook.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\source\RenderAPI.cpp" />
@@ -45,6 +46,7 @@
       <Filter>UAL</Filter>
     </ClCompile>
     <ClCompile Include="..\..\source\D3D12Hook_Offsets.c" />
+    <ClCompile Include="..\..\source\Hooks\DX12_Win32Hooks.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Unity">

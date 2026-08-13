@@ -64,7 +64,7 @@ Shader "Unlit/DrawWithBindless"
                 int texIdFlat = int(int(textureIds.x) + int(textureIds.y) * numTextures) + baseTexture;
                 texIdFlat = max(texIdFlat, 0);
 
-                float4 v = TextureTable[texIdFlat].Sample(my_linear_clamp_sampler, frac(i.uv.xy * numTextures));
+                float4 v = TextureTable[NonUniformResourceIndex(texIdFlat)].Sample(my_linear_clamp_sampler, frac(i.uv.xy * numTextures));
                 return v;
             }
             
