@@ -13,6 +13,10 @@ void __D3D12HOOKS_InitializeD3D12Offsets() {
 	HookDeviceFunc(CreateComputePipelineState);
 	HookDeviceFunc(CreateGraphicsPipelineState);
 
+	// Creation
+	HookDeviceFunc(CreateCommandList);
+	HookDevice4Func(CreateCommandList1);
+
 	// Command List
 	HookCmdListFunc(SetPipelineState);
 	HookCmdListFunc(SetDescriptorHeaps);

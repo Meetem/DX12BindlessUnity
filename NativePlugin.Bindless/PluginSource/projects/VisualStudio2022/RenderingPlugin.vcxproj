@@ -19,7 +19,6 @@
     <ClInclude Include="..\..\source\D3D12Hooks.h" />
     <ClInclude Include="..\..\source\gl3w\gl3w.h" />
     <ClInclude Include="..\..\source\gl3w\glcorearb.h" />
-    <ClInclude Include="..\..\source\Hooks\InlineHook.h" />
     <ClInclude Include="..\..\source\PlatformBase.h" />
     <ClInclude Include="..\..\source\RenderAPI.h" />
     <ClInclude Include="..\..\source\RenderAPI_D3D12.h" />
@@ -35,7 +34,6 @@
   <ItemGroup>
     <ClCompile Include="..\..\source\D3D12Hook_Offsets.c" />
     <ClCompile Include="..\..\source\gl3w\gl3w.c" />
-    <ClCompile Include="..\..\source\Hooks\DX12_Win32Hooks.cpp" />
     <ClCompile Include="..\..\source\RenderAPI.cpp" />
     <ClCompile Include="..\..\source\RenderAPI_D3D12.cpp" />
     <ClCompile Include="..\..\source\RenderingPlugin.cpp" />
@@ -105,7 +103,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
-      <PreprocessorDefinitions>GLEW_STATIC;WIN32;_BINDLESS_DEBUG</PreprocessorDefinitions>
+      <PreprocessorDefinitions>GLEW_STATIC;WIN32;_BINDLESS_DEBUG;USE_MINHOOK</PreprocessorDefinitions>
       <PrecompiledHeader>
       </PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
@@ -114,7 +112,7 @@
       <OmitFramePointers>true</OmitFramePointers>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>opengl32.lib;d3d12.lib;</AdditionalDependencies>
+      <AdditionalDependencies>opengl32.lib;d3d12.lib;../../source/MinHook/lib/libMinHook.x64.lib</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <ModuleDefinitionFile>../../source/RenderingPlugin.def</ModuleDefinitionFile>
@@ -126,7 +124,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='DebugHDRP|x64'">
     <ClCompile>
-      <PreprocessorDefinitions>GLEW_STATIC;WIN32;_BINDLESS_DEBUG</PreprocessorDefinitions>
+      <PreprocessorDefinitions>GLEW_STATIC;WIN32;_BINDLESS_DEBUG;USE_MINHOOK</PreprocessorDefinitions>
       <PrecompiledHeader>
       </PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
@@ -135,7 +133,7 @@
       <OmitFramePointers>true</OmitFramePointers>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>opengl32.lib;d3d12.lib;</AdditionalDependencies>
+      <AdditionalDependencies>opengl32.lib;d3d12.lib;../../source/MinHook/lib/libMinHook.x64.lib</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <ModuleDefinitionFile>../../source/RenderingPlugin.def</ModuleDefinitionFile>
@@ -147,7 +145,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <PreprocessorDefinitions>GLEW_STATIC;WIN32;</PreprocessorDefinitions>
+      <PreprocessorDefinitions>GLEW_STATIC;WIN32;USE_MINHOOK;</PreprocessorDefinitions>
       <PrecompiledHeader>
       </PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
@@ -156,7 +154,7 @@
       <OmitFramePointers>true</OmitFramePointers>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>opengl32.lib;d3d12.lib;</AdditionalDependencies>
+      <AdditionalDependencies>opengl32.lib;d3d12.lib;../../source/MinHook/lib/libMinHook.x64.lib</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <ModuleDefinitionFile>../../source/RenderingPlugin.def</ModuleDefinitionFile>

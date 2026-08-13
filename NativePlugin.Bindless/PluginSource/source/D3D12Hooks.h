@@ -57,6 +57,23 @@ typedef HRESULT(STDMETHODCALLTYPE* D3D12_Reset)(
     _In_  ID3D12CommandAllocator* pAllocator,
     _In_opt_  ID3D12PipelineState* pInitialState);
 
+typedef HRESULT(STDMETHODCALLTYPE* D3D12_CreateCommandList)(
+    ID3D12Device* This,
+    _In_  UINT nodeMask,
+    _In_  D3D12_COMMAND_LIST_TYPE type,
+    _In_  ID3D12CommandAllocator* pCommandAllocator,
+    _In_opt_  ID3D12PipelineState* pInitialState,
+    REFIID riid,
+    _COM_Outptr_  void** ppCommandList);
+
+typedef HRESULT(STDMETHODCALLTYPE* D3D12_CreateCommandList1)(
+    ID3D12Device4* This,
+    _In_  UINT nodeMask,
+    _In_  D3D12_COMMAND_LIST_TYPE type,
+    _In_  D3D12_COMMAND_LIST_FLAGS flags,
+    REFIID riid,
+    _COM_Outptr_  void** ppCommandList);
+
 #ifndef D3D12_HOOKS_DECLARE
 
 #define RegisterHookFunc(Name) static D3D12_##Name Orig##Name = NULL;\
@@ -68,11 +85,15 @@ extern "C" unsigned __D3D12_VTOFFS_##Name;
 #define HookCmdListFunc(Name) Orig##Name = (D3D12_##Name)\
     Hook(cmdList, __D3D12_VTOFFS_##Name, Hooked_##Name)
 
+#define HookGenericFunc(fromObj, Name) Orig##Name = (D3D12_##Name)\
+    Hook(fromObj, __D3D12_VTOFFS_##Name, Hooked_##Name)
+
 extern "C" void __D3D12HOOKS_InitializeD3D12Offsets();
 #else
 #define RegisterHookFunc(Name) unsigned __D3D12_VTOFFS_##Name = 0;
 
 #define HookDeviceFunc(Name) __D3D12_VTOFFS_##Name = offsetof(ID3D12DeviceVtbl, ##Name)
+#define HookDevice4Func(Name) __D3D12_VTOFFS_##Name = offsetof(ID3D12Device4Vtbl, ##Name)
 #define HookCmdListFunc(Name) __D3D12_VTOFFS_##Name = offsetof(ID3D12GraphicsCommandListVtbl, ##Name)
 
 #endif
@@ -82,6 +103,10 @@ RegisterHookFunc(CreateDescriptorHeap)
 RegisterHookFunc(CreateRootSignature)
 RegisterHookFunc(CreateComputePipelineState)
 RegisterHookFunc(CreateGraphicsPipelineState)
+
+RegisterHookFunc(CreateCommandList)
+// device4
+RegisterHookFunc(CreateCommandList1)
 
 // graphics command list
 RegisterHookFunc(SetPipelineState)

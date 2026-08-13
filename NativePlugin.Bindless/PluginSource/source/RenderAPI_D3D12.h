@@ -52,8 +52,6 @@ public:
 private:
     int currentFrameBindlessOffset;
 
-    void HookCommandListObject(ID3D12GraphicsCommandList* cmdList);
-
     // Creates and initializes all resources that are used across multiple frames
     void initialize_and_create_resources();
     void release_resources();
