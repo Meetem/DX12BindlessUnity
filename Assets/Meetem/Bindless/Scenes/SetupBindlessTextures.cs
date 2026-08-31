@@ -22,11 +22,17 @@ namespace Meetem.Bindless
 
         protected void LateUpdate()
         {
+            if (Application.isPlaying)
+                return;
+            
             Rebind();
         }
 
         protected void Rebind()
         {
+            if (bindlessTextures == null)
+                return;
+            
             for (int i = 0; i < testTextures.Length; i++)
                 bindlessTextures[i] = BindlessTexture.FromTexture2D(testTextures[i]);
             

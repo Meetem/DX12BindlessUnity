@@ -6,7 +6,7 @@ RWTexture2D<float4> Result : register(u0);
 // register t31 is registered to be the "bindless" slot
 // so you declare your bindless tables like that,
 // and descriptor patching will do the job.
-Texture2D Texture2DTable[] : register(t31);
+Texture2D<float4> Texture2DTable[2048] : register(t31);
 
 [numthreads(32,32,1)]
 void CSMain (uint3 id : SV_DispatchThreadID)

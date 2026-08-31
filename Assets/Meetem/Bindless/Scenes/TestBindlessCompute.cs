@@ -18,7 +18,7 @@ namespace Meetem.Bindless
         private int currentArgs = 0;
         private int currentArgsTextures = 0;
         
-        void Awake()
+        void Start()
         {
             currentArgs = 0;
             
@@ -55,10 +55,11 @@ namespace Meetem.Bindless
             
             cmdBuffer.SetComputeTextureParam(shader, 0, "Result", rt);
             cmdBuffer.DispatchCompute(shader, 0, 16, 16, 1);
-            //cmdBuffer.DispatchCompute(shader, 0, 16, 16, 1);
+            cmdBuffer.DispatchCompute(shader, 0, 16, 16, 1);
     
             if (renderToImage && Time.frameCount >= 5)
             {
+                Debug.Log("Rendering with compute");
                 Graphics.ExecuteCommandBuffer(cmdBuffer);
             }
         }
