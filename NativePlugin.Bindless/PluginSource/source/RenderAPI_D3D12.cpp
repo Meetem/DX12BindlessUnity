@@ -157,10 +157,14 @@ _forceinline static void* HookVT(void* vtablePtr, int vtableOffset, void* newFun
 
 	auto foundTrampoline = hookedFunctions.find(func);
 	if (foundTrampoline == hookedFunctions.end()) {
-		UnityLog::Debug("Hooking %p of %p\n", (void*)func, (void*)vtablePtr);
-
 		void* orig = nullptr;
 		auto createHookRes = MH_CreateHook(func, newFunction, &orig);
+		if (createHookRes == MH_ERROR_ALREADY_CREATED) {
+			return orig;
+		}
+
+		UnityLog::Debug("Hooking %p of %p\n", (void*)func, (void*)vtablePtr);
+
 		if (createHookRes != MH_OK) {
 			UnityLog::LogError("Can't install hook for %p = %s\n", func, MH_StatusToString(createHookRes));
 			return func;
@@ -615,10 +619,7 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12De
 	return OrigCreateDescriptorHeap(device, &pDescCopy, riid, ppvHeap);
 }
 
-static bool BindDescriptorTable(
-	ID3D12CommandList* list,
-	CommandListStateData& dt,
-	bool gfx)
+static bool BindDescriptorTable(ID3D12CommandList* list, CommandListStateData& dt, bool gfx)
 {
 	if (myD3D12->hookedDescriptorHeaps.empty()) {
 		UnityLog::LogWarning("Set*RootDescriptorTable is called, but no srvHeap is set.\n");
@@ -655,10 +656,6 @@ static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(ID3D12GraphicsComm
 
 	if (hasDescHook)
 	{
-		//UnityLog::LogError("Finally, bindless root sig!\n");
-		//auto type = This->GetType();
-		//UnityLog::LogError("Command list type %d\n", type);
-
 		dt.setIsInHookedRootSig(true, isGfx);
 		dt.setSrvDescId(d.descriptorId + 1, isGfx);
 		dt.setIsDescSetAssigned(false, isGfx);
@@ -666,7 +663,6 @@ static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(ID3D12GraphicsComm
 	} 
 	else
 	{
-		//UnityLog::LogWarning("Not, bindless root sig!\n");
 		dt.setIsInHookedRootSig(false, isGfx);
 		dt.setSrvDescId(NoBindless, isGfx);
 		dt.setIsDescSetAssigned(false, isGfx);
@@ -781,15 +777,8 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(ID3D12Graphic
 		heaps);
 
 	dt.assignedHookedHeap = assigned;
-	dt.setIsDescSetAssigned(0, false);
-	dt.setIsDescSetAssigned(0, true);
-
-	// Rebind our appended root tables immediately after the heap change.
-	if (assigned != 0)
-	{
-		//BindDescriptorTable(This, dt, false);
-		//BindDescriptorTable(This, dt, true);
-	}
+	dt.setIsDescSetAssigned(false, false);
+	dt.setIsDescSetAssigned(false, true);
 
 	SetCommandListState(This, dt);
 }
@@ -914,11 +903,11 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(I
 
 static void _InstallRealCmdlistHooks(void* vtablePtr, const char* name) 
 {
-	HookVtableFunc(vtablePtr, SetComputeRootDescriptorTable);
-	HookVtableFunc(vtablePtr, SetComputeRootSignature);
-
 	HookVtableFunc(vtablePtr, SetDescriptorHeaps);
 	HookVtableFunc(vtablePtr, Reset);
+
+	HookVtableFunc(vtablePtr, SetComputeRootDescriptorTable);
+	HookVtableFunc(vtablePtr, SetComputeRootSignature);
 
 	HookVtableFunc(vtablePtr, SetGraphicsRootDescriptorTable);
 	HookVtableFunc(vtablePtr, SetGraphicsRootSignature);
@@ -929,6 +918,8 @@ static void _InstallCmdlistHooks(void* cmdList, const char* name) {
 		return;
 
 	void* vtablePtr = *(void**)cmdList;
+	if(vtablePtr == nullptr)
+		return;
 
 	// no entry yet.
 	if (hookedCmdVTables.insert(vtablePtr).second)
@@ -943,7 +934,7 @@ static void _InstallCmdlistHooks(void* cmdList, const char* name) {
 			return;
 		}
 
-		UnityLog::Log("Hooking CommandList functions %s\n", name);
+		UnityLog::Debug("Hooking CommandList functions %s\n", name);
 		_InstallRealCmdlistHooks(vtablePtr, name);
 	}
 }

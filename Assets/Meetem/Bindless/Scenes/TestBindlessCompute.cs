@@ -55,7 +55,7 @@ namespace Meetem.Bindless
             
             cmdBuffer.SetComputeTextureParam(shader, 0, "Result", rt);
             cmdBuffer.DispatchCompute(shader, 0, 16, 16, 1);
-            cmdBuffer.DispatchCompute(shader, 0, 16, 16, 1);
+            //cmdBuffer.DispatchCompute(shader, 0, 16, 16, 1);
     
             if (renderToImage && Time.frameCount >= 5)
             {
