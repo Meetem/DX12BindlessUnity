@@ -88,6 +88,9 @@ extern "C" unsigned __D3D12_VTOFFS_##Name;
 #define HookGenericFunc(fromObj, Name) Orig##Name = (D3D12_##Name)\
     Hook(fromObj, __D3D12_VTOFFS_##Name, Hooked_##Name)
 
+#define HookVtableFunc(vtableObj, Name) Orig##Name = (D3D12_##Name)\
+    HookVT(vtableObj, __D3D12_VTOFFS_##Name, Hooked_##Name)
+
 extern "C" void __D3D12HOOKS_InitializeD3D12Offsets();
 #else
 #define RegisterHookFunc(Name) unsigned __D3D12_VTOFFS_##Name = 0;

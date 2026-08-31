@@ -16,6 +16,24 @@
 std::unordered_map<void*, void*> hookedFunctions = {};
 
 concurrency::concurrent_unordered_set<void*> hookedCmdVTables;
+std::atomic_flag isCommandListHooking = ATOMIC_FLAG_INIT;
+
+class LockGuard {
+public:
+	__forceinline LockGuard(std::atomic_flag& flag) {
+		this->flg = &flag;
+
+		while (flag.test_and_set(std::memory_order_acquire))
+			_mm_pause();
+	}
+
+	__forceinline ~LockGuard(){
+		flg->clear(std::memory_order_release);
+	}
+
+private:
+	std::atomic_flag* flg;
+};
 
 // My data:
 // {CAD4DE65-63E8-4CF6-B82C-6F7EE6776335}
@@ -92,10 +110,14 @@ static void handle_hr_fatal(HRESULT hr, const char* error = "")
 	}
 }
 
+_forceinline static void** GetVTableEntryPtrFromVT(void* vtableO, int vtableOffset) {
+	return (void**)((BYTE*)vtableO + (vtableOffset));
+}
+
 template<typename T>
-static void** GetVTableEntryPtr(T* obj, int vtableOffset) {
+_forceinline static void** GetVTableEntryPtr(T* obj, int vtableOffset) {
 	size_t* vtable = *(size_t**)obj;
-	return (void**)((BYTE*)vtable + (vtableOffset));
+	return GetVTableEntryPtrFromVT(vtable, vtableOffset);
 }
 
 static bool Unprotect(void* addr) {
@@ -119,18 +141,24 @@ static bool Unprotect(void* addr) {
 #ifdef USE_MINHOOK
 #include "MinHook/include/MinHook.h"
 
-template<typename T>
-static void* Hook(T* obj, int vtableOffset, void* newFunction) {
-	auto pptr = GetVTableEntryPtr<T>(obj, vtableOffset);
+_forceinline static void* HookVT(void* vtablePtr, int vtableOffset, void* newFunction) {
+	if (vtablePtr == nullptr) {
+		UnityLog::LogError("HookVT called with nullptr vtable. Exiting.");
+		__debugbreak();
+		abort();
+		return nullptr;
+	}
+
+	auto pptr = GetVTableEntryPtrFromVT(vtablePtr, vtableOffset);
 	auto func = *pptr;
 
 	auto foundTrampoline = hookedFunctions.find(func);
 	if (foundTrampoline == hookedFunctions.end()) {
-		UnityLog::Log("Hooking %p of %p\n", (void*)func, (void*)obj);
+		UnityLog::Log("Hooking %p of %p\n", (void*)func, (void*)vtablePtr);
 
 		void* orig = nullptr;
 		auto createHookRes = MH_CreateHook(func, newFunction, &orig);
-		if(createHookRes != MH_OK){
+		if (createHookRes != MH_OK) {
 			UnityLog::LogError("Can't install hook for %p = %s\n", func, MH_StatusToString(createHookRes));
 			return func;
 		}
@@ -144,9 +172,19 @@ static void* Hook(T* obj, int vtableOffset, void* newFunction) {
 		hookedFunctions[func] = orig;
 		return orig;
 	}
-	
+
 	return foundTrampoline->second;
 }
+
+template<typename T>
+static void* Hook(T* obj, int vtableOffset, void* newFunction) {
+	if(obj == nullptr)
+		return nullptr;
+
+	void* vtable = *(void**)obj;
+	return HookVT(vtable, vtableOffset, newFunction);
+}
+
 #else
 template<typename T>
 static void* Hook(T* obj, int vtableOffset, void* newFunction)
@@ -862,20 +900,28 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(I
 
 #endif
 
-static void _InstallCmdlistHooks(void* cmdList) {
+static void _InstallCmdlistHooks(void* cmdList, const char* name) {
 	if(cmdList == nullptr)
 		return;
 
+	void* vtablePtr = *(void**)cmdList;
+
 	// no entry yet.
-	if (hookedCmdVTables.insert(cmdList).second) {
-		HookGenericFunc(cmdList, SetComputeRootDescriptorTable);
-		HookGenericFunc(cmdList, SetComputeRootSignature);
-	
-		HookGenericFunc(cmdList, SetDescriptorHeaps);
-		HookGenericFunc(cmdList, Reset);
-	
-		HookGenericFunc(cmdList, SetGraphicsRootDescriptorTable);
-		HookGenericFunc(cmdList, SetGraphicsRootSignature);
+	if (hookedCmdVTables.insert(vtablePtr).second)
+	{
+		// insert hooks,
+		// also mark the hooking flag here.
+		LockGuard lk(isCommandListHooking);
+		UnityLog::Debug("Hooking CommandList functions %s\n", name);
+
+		HookVtableFunc(vtablePtr, SetComputeRootDescriptorTable);
+		HookVtableFunc(vtablePtr, SetComputeRootSignature);
+
+		HookVtableFunc(vtablePtr, SetDescriptorHeaps);
+		HookVtableFunc(vtablePtr, Reset);
+
+		HookVtableFunc(vtablePtr, SetGraphicsRootDescriptorTable);
+		HookVtableFunc(vtablePtr, SetGraphicsRootSignature);
 	}
 }
 
@@ -888,13 +934,13 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateCommandList(
 	REFIID riid,
 	_COM_Outptr_  void** ppCommandList) 
 {
-	if (type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
-		UnityLog::Log("Create command list of type: %d | 0\n", type);
-	}
+	//if (type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
+		UnityLog::Debug("Create command list of type: %d | 0\n", type);
+	//}
 
 	auto result = OrigCreateCommandList(This, nodeMask, type, pCommandAllocator, pInitialState, riid, ppCommandList);
 	if (ppCommandList != nullptr && !FAILED(result)) {
-		_InstallCmdlistHooks(ppCommandList[0]);
+		_InstallCmdlistHooks(ppCommandList[0], "CreateCommandList0");
 		SetCommandListState((ID3D12CommandList*)ppCommandList[0], {});
 	}
 
@@ -909,13 +955,13 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateCommandList1(
 	REFIID riid,
 	_COM_Outptr_  void** ppCommandList) 
 {
-	if (type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
-		UnityLog::Log("Create command list of type: %d | 1\n", type);
-	}
+	//if (type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
+		UnityLog::Debug("Create command list of type: %d | 1\n", type);
+	//}
 
 	auto result = OrigCreateCommandList1(This, nodeMask, type, flags, riid, ppCommandList);
 	if (ppCommandList != nullptr && !FAILED(result)) {
-		_InstallCmdlistHooks(ppCommandList[0]);
+		_InstallCmdlistHooks(ppCommandList[0], "CreateCommandList1");
 		SetCommandListState((ID3D12CommandList*)ppCommandList[0], {});
 	}
 
