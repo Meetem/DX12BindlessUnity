@@ -17,6 +17,9 @@ void __D3D12HOOKS_InitializeD3D12Offsets() {
 	HookDeviceFunc(CreateCommandList);
 	HookDevice4Func(CreateCommandList1);
 
+	// Command Queue
+	HookCmdQueueFunc(ExecuteCommandLists);
+
 	// Command List
 	HookCmdListFunc(SetPipelineState);
 	HookCmdListFunc(SetDescriptorHeaps);

@@ -16,13 +16,23 @@ namespace Meetem.Bindless
         {
             bindlessTextures = new BindlessTexture[1024];
             pinnedHandle = GCHandle.Alloc(bindlessTextures, GCHandleType.Pinned);
-            
+
+            Rebind();
+        }
+
+        protected void LateUpdate()
+        {
+            Rebind();
+        }
+
+        protected void Rebind()
+        {
             for (int i = 0; i < testTextures.Length; i++)
                 bindlessTextures[i] = BindlessTexture.FromTexture2D(testTextures[i]);
             
             bindlessTextures.SetBindlessTextures(0);
         }
-
+        
         protected void OnDestroy()
         {
             if(pinnedHandle.IsAllocated)

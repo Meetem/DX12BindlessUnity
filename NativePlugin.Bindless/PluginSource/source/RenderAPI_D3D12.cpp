@@ -154,7 +154,7 @@ _forceinline static void* HookVT(void* vtablePtr, int vtableOffset, void* newFun
 
 	auto foundTrampoline = hookedFunctions.find(func);
 	if (foundTrampoline == hookedFunctions.end()) {
-		UnityLog::Log("Hooking %p of %p\n", (void*)func, (void*)vtablePtr);
+		UnityLog::Debug("Hooking %p of %p\n", (void*)func, (void*)vtablePtr);
 
 		void* orig = nullptr;
 		auto createHookRes = MH_CreateHook(func, newFunction, &orig);
@@ -429,7 +429,7 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
 			for (unsigned x = 0; x < v.NumDescriptorRanges; x++) {
 				auto& dr = writableDescriptors[x];
 
-				UnityLog::Log("DescriptorTable: %d, type: %d, base register: %d, numDescriptors: %d, offset: %d\n",
+				UnityLog::Debug("DescriptorTable: %d, type: %d, base register: %d, numDescriptors: %d, offset: %d\n",
 					x, dr.RangeType, dr.BaseShaderRegister, dr.NumDescriptors, dr.OffsetInDescriptorsFromTableStart);
 
 				if (dr.RegisterSpace != 0 || dr.RangeType != D3D12_DESCRIPTOR_RANGE_TYPE_SRV) {
@@ -482,7 +482,7 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
 	if (ignore || !needPlaceSrv) {
 		FreeDeepCopy(&rootSig);
 		auto ret = OrigCreateRootSignature(This, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid, ppvRootSignature);
-		UnityLog::Log("Created root desc [n] %p, %p\n", *ppvRootSignature, (void*)(size_t)(ret));
+		UnityLog::Debug("Created root desc [n] %p, %p\n", *ppvRootSignature, (void*)(size_t)(ret));
 		
 		return ret;
 	}
@@ -560,7 +560,7 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12De
 	_COM_Outptr_  void** ppvHeap) {
 	D3D12_DESCRIPTOR_HEAP_DESC pDescCopy = *pDescriptorHeapDesc;
 	
-	UnityLog::Log("Creating descriptor heap: %d, elements: %d\n", pDescCopy.Type, pDescCopy.NumDescriptors);
+	UnityLog::Debug("Creating descriptor heap: %d, elements: %d\n", pDescCopy.Type, pDescCopy.NumDescriptors);
 
 	if (pDescCopy.Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) {
 		uint32_t additional = RenderAPI_D3D12::numAdditionalSrvTotal();
@@ -643,9 +643,9 @@ static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(ID3D12GraphicsComm
 
 	if (hasDescHook)
 	{
-		UnityLog::LogError("Finally, bindless root sig!\n");
-		auto type = This->GetType();
-			UnityLog::LogError("Command list type %d\n", type);
+		//UnityLog::LogError("Finally, bindless root sig!\n");
+		//auto type = This->GetType();
+		//UnityLog::LogError("Command list type %d\n", type);
 
 		dt.setIsInHookedRootSig(true, isGfx);
 		dt.setSrvDescId(d.descriptorId + 1, isGfx);
@@ -654,7 +654,7 @@ static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(ID3D12GraphicsComm
 	} 
 	else
 	{
-		UnityLog::LogWarning("Not, bindless root sig!\n");
+		//UnityLog::LogWarning("Not, bindless root sig!\n");
 		dt.setIsInHookedRootSig(false, isGfx);
 		dt.setSrvDescId(NoBindless, isGfx);
 		dt.setIsDescSetAssigned(false, isGfx);
@@ -912,7 +912,7 @@ static void _InstallCmdlistHooks(void* cmdList, const char* name) {
 		// insert hooks,
 		// also mark the hooking flag here.
 		LockGuard lk(isCommandListHooking);
-		UnityLog::Debug("Hooking CommandList functions %s\n", name);
+		UnityLog::Log("Hooking CommandList functions %s\n", name);
 
 		HookVtableFunc(vtablePtr, SetComputeRootDescriptorTable);
 		HookVtableFunc(vtablePtr, SetComputeRootSignature);
@@ -966,6 +966,22 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateCommandList1(
 	}
 
 	return result;
+}
+
+extern "C" static void STDMETHODCALLTYPE Hooked_ExecuteCommandLists(
+	ID3D12CommandQueue* This,
+	_In_  UINT NumCommandLists,
+	_In_reads_(NumCommandLists)  ID3D12CommandList* const* ppCommandLists)
+{
+	// Lists can reach the queue without passing through the hooked
+	// CreateCommandList/CreateCommandList1, so make sure they are hooked here.
+	if (ppCommandLists != nullptr) {
+		for (UINT i = 0; i < NumCommandLists; i++) {
+			_InstallCmdlistHooks(ppCommandLists[i], "ExecuteCommandLists");
+		}
+	}
+
+	OrigExecuteCommandLists(This, NumCommandLists, ppCommandLists);
 }
 
 extern unsigned __api_call_counter;
@@ -1107,6 +1123,11 @@ void RenderAPI_D3D12::ProcessDeviceEvent(UnityGfxDeviceEventType type, IUnityInt
 		HookDeviceFunc(CreateRootSignature);
 		HookDeviceFunc(CreateComputePipelineState);
 		HookDeviceFunc(CreateGraphicsPipelineState);
+
+		ID3D12CommandQueue* cmdQueue = s_d3d12->GetCommandQueue();
+		if (cmdQueue != nullptr) {
+			HookGenericFunc(cmdQueue, ExecuteCommandLists);
+		}
 
 		srvIncrement = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		initialize_and_create_resources();

@@ -74,6 +74,11 @@ typedef HRESULT(STDMETHODCALLTYPE* D3D12_CreateCommandList1)(
     REFIID riid,
     _COM_Outptr_  void** ppCommandList);
 
+typedef void (STDMETHODCALLTYPE* D3D12_ExecuteCommandLists)(
+    ID3D12CommandQueue* This,
+    _In_  UINT NumCommandLists,
+    _In_reads_(NumCommandLists)  ID3D12CommandList* const* ppCommandLists);
+
 #ifndef D3D12_HOOKS_DECLARE
 
 #define RegisterHookFunc(Name) static D3D12_##Name Orig##Name = NULL;\
@@ -98,6 +103,7 @@ extern "C" void __D3D12HOOKS_InitializeD3D12Offsets();
 #define HookDeviceFunc(Name) __D3D12_VTOFFS_##Name = offsetof(ID3D12DeviceVtbl, ##Name)
 #define HookDevice4Func(Name) __D3D12_VTOFFS_##Name = offsetof(ID3D12Device4Vtbl, ##Name)
 #define HookCmdListFunc(Name) __D3D12_VTOFFS_##Name = offsetof(ID3D12GraphicsCommandListVtbl, ##Name)
+#define HookCmdQueueFunc(Name) __D3D12_VTOFFS_##Name = offsetof(ID3D12CommandQueueVtbl, ##Name)
 
 #endif
 
@@ -110,6 +116,9 @@ RegisterHookFunc(CreateGraphicsPipelineState)
 RegisterHookFunc(CreateCommandList)
 // device4
 RegisterHookFunc(CreateCommandList1)
+
+// command queue
+RegisterHookFunc(ExecuteCommandLists)
 
 // graphics command list
 RegisterHookFunc(SetPipelineState)
