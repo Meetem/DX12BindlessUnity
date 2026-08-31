@@ -5,7 +5,12 @@
 #define D3D12_HOOKS_DECLARE
 #include "D3D12Hooks.h"
 
+static int _d3doffsetsReady = 0;
 void __D3D12HOOKS_InitializeD3D12Offsets() {
+	if(_d3doffsetsReady)
+		return;
+
+	_d3doffsetsReady = 1;
 
 	// Device
 	HookDeviceFunc(CreateDescriptorHeap);
@@ -28,6 +33,5 @@ void __D3D12HOOKS_InitializeD3D12Offsets() {
 	HookCmdListFunc(SetComputeRootSignature);
 	HookCmdListFunc(SetGraphicsRootSignature);
 	HookCmdListFunc(Reset);
-
 }
 

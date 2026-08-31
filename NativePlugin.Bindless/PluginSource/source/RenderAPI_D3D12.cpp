@@ -12,10 +12,13 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <concurrent_unordered_set.h>
+#include <concurrent_queue.h>
 
 std::unordered_map<void*, void*> hookedFunctions = {};
 
 concurrency::concurrent_unordered_set<void*> hookedCmdVTables;
+concurrency::concurrent_queue<void*> pendingHookCmdVTables;
+
 std::atomic_flag isCommandListHooking = ATOMIC_FLAG_INIT;
 
 class LockGuard {
@@ -201,10 +204,21 @@ static void* Hook(T* obj, int vtableOffset, void* newFunction)
 
 #include "D3D12Hooks.h"
 
+static void _InstallRealCmdlistHooks(void* vtablePtr, const char* name);
 RenderAPI* CreateRenderAPI_D3D12()
 {
 	auto obj = new RenderAPI_D3D12();
+	LockGuard lk(isCommandListHooking);
 	myD3D12 = obj;
+	
+	// install pending hooks.
+	void* vtablePtr = nullptr;
+	while(pendingHookCmdVTables.try_pop(vtablePtr)){
+		if (vtablePtr != nullptr) {
+			_InstallRealCmdlistHooks(vtablePtr, "CreateRenderAPI_D3D12");
+		}
+	}
+
 	return obj;
 }
 
@@ -555,11 +569,9 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
 	return ret;
 }
 
-extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12Device * device, _In_  D3D12_DESCRIPTOR_HEAP_DESC * pDescriptorHeapDesc,
-	REFIID riid,
-	_COM_Outptr_  void** ppvHeap) {
+extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12Device * device, _In_  D3D12_DESCRIPTOR_HEAP_DESC * pDescriptorHeapDesc, REFIID riid, _COM_Outptr_  void** ppvHeap) 
+{
 	D3D12_DESCRIPTOR_HEAP_DESC pDescCopy = *pDescriptorHeapDesc;
-	
 	UnityLog::Debug("Creating descriptor heap: %d, elements: %d\n", pDescCopy.Type, pDescCopy.NumDescriptors);
 
 	if (pDescCopy.Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) {
@@ -900,6 +912,18 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(I
 
 #endif
 
+static void _InstallRealCmdlistHooks(void* vtablePtr, const char* name) 
+{
+	HookVtableFunc(vtablePtr, SetComputeRootDescriptorTable);
+	HookVtableFunc(vtablePtr, SetComputeRootSignature);
+
+	HookVtableFunc(vtablePtr, SetDescriptorHeaps);
+	HookVtableFunc(vtablePtr, Reset);
+
+	HookVtableFunc(vtablePtr, SetGraphicsRootDescriptorTable);
+	HookVtableFunc(vtablePtr, SetGraphicsRootSignature);
+}
+
 static void _InstallCmdlistHooks(void* cmdList, const char* name) {
 	if(cmdList == nullptr)
 		return;
@@ -912,16 +936,15 @@ static void _InstallCmdlistHooks(void* cmdList, const char* name) {
 		// insert hooks,
 		// also mark the hooking flag here.
 		LockGuard lk(isCommandListHooking);
+		
+		if (myD3D12 == nullptr) {
+			UnityLog::Log("Delayed CommandList functions %s\n", name);
+			pendingHookCmdVTables.push(vtablePtr);
+			return;
+		}
+
 		UnityLog::Log("Hooking CommandList functions %s\n", name);
-
-		HookVtableFunc(vtablePtr, SetComputeRootDescriptorTable);
-		HookVtableFunc(vtablePtr, SetComputeRootSignature);
-
-		HookVtableFunc(vtablePtr, SetDescriptorHeaps);
-		HookVtableFunc(vtablePtr, Reset);
-
-		HookVtableFunc(vtablePtr, SetGraphicsRootDescriptorTable);
-		HookVtableFunc(vtablePtr, SetGraphicsRootSignature);
+		_InstallRealCmdlistHooks(vtablePtr, name);
 	}
 }
 
@@ -982,6 +1005,51 @@ extern "C" static void STDMETHODCALLTYPE Hooked_ExecuteCommandLists(
 	}
 
 	OrigExecuteCommandLists(This, NumCommandLists, ppCommandLists);
+}
+
+void InstallEarlyD3D12Hooks()
+{
+	static bool s_earlyHooksInstalled = false;
+	if (s_earlyHooksInstalled)
+		return;
+
+	UnityLog::Debug("Installing Early Hooks");
+
+	__D3D12HOOKS_InitializeD3D12Offsets();
+
+	HMODULE d3d12Module = GetModuleHandleA("d3d12.dll");
+	if (d3d12Module == nullptr) {
+		UnityLog::LogWarning("d3d12.dll is not loaded yet, early hooks were not installed.\n");
+		return;
+	}
+
+	auto createDevice = (PFN_D3D12_CREATE_DEVICE)GetProcAddress(d3d12Module, "D3D12CreateDevice");
+	if (createDevice == nullptr) {
+		UnityLog::LogError("Can't find D3D12CreateDevice export in d3d12.dll\n");
+		return;
+	}
+
+	ID3D12Device* tempDevice = nullptr;
+	HRESULT hr = createDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&tempDevice));
+	if (FAILED(hr) || tempDevice == nullptr) {
+		UnityLog::LogError("Can't create a temporary D3D12 device for early hooking, hr = 0x%p\n", (void*)(size_t)hr);
+		return;
+	}
+
+	// MinHook patches the function code itself, so hooking through a temporary
+	// device covers every device sharing this d3d12.dll, including the one
+	// D3D11On12 creates internally before Unity's device event fires.
+	HookGenericFunc(tempDevice, CreateCommandList);
+
+	ID3D12Device4* tempDevice4 = nullptr;
+	if (!FAILED(tempDevice->QueryInterface(IID_PPV_ARGS(&tempDevice4))) && tempDevice4 != nullptr) {
+		HookGenericFunc(tempDevice4, CreateCommandList1);
+		tempDevice4->Release();
+	}
+
+	tempDevice->Release();
+	s_earlyHooksInstalled = true;
+	UnityLog::Debug("Installed Early Hooks");
 }
 
 extern unsigned __api_call_counter;
@@ -1068,8 +1136,8 @@ void RenderAPI_D3D12::ProcessDeviceEvent(UnityGfxDeviceEventType type, IUnityInt
 	void** vtableEntryPtr = nullptr;
 
 	if (type == kUnityGfxDeviceEventInitialize) {
-		__D3D12HOOKS_InitializeD3D12Offsets();
 		UnityLog::Log("Initializing D3D12");
+		__D3D12HOOKS_InitializeD3D12Offsets();
 
 		this->s_d3d12 = interfaces->Get<IUnityGraphicsD3D12v7>();
 		this->device = s_d3d12->GetDevice();

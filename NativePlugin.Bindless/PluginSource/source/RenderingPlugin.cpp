@@ -36,6 +36,7 @@ static void UNITY_INTERFACE_API OnGraphicsDeviceEvent(UnityGfxDeviceEventType ev
 IUnityInterfaces* s_UnityInterfaces = NULL;
 IUnityGraphics* s_Graphics = NULL;
 
+extern void InstallEarlyD3D12Hooks();
 extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API UnityPluginLoad(IUnityInterfaces * unityInterfaces)
 {
 	s_UnityInterfaces = unityInterfaces;
@@ -44,6 +45,10 @@ extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API UnityPluginLoad(IUnit
 	if(!InitializeHooks()){
 		return;
 	}
+
+	#if SUPPORT_D3D12
+	InstallEarlyD3D12Hooks();
+	#endif
 
 	s_Graphics = s_UnityInterfaces->Get<IUnityGraphics>();
 	s_Graphics->RegisterDeviceEventCallback(OnGraphicsDeviceEvent);
