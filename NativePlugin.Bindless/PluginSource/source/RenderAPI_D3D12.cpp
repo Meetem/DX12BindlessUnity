@@ -208,6 +208,7 @@ static void* Hook(T* obj, int vtableOffset, void* newFunction)
 #endif
 
 #include "D3D12Hooks.h"
+#include "DescriptorTableInjection.h"
 #ifdef USE_MINHOOK
 #define COMMAND_LIST_ORIGINAL(Name) D3D12_##Name Orig##Name,
 #define COMMAND_LIST_TARGET(list, Name) TargetFunctionHook<D3D12_##Name>::Original(*GetVTableEntryPtr(list, __D3D12_VTOFFS_##Name))
@@ -217,6 +218,7 @@ static void* Hook(T* obj, int vtableOffset, void* newFunction)
 #endif
 
 static void _InstallRealCmdlistHooks(void* vtablePtr, const char* name);
+static void _InstallCmdlistHooks(void* cmdList, const char* name);
 RenderAPI* CreateRenderAPI_D3D12()
 {
 	auto obj = new RenderAPI_D3D12();
@@ -394,11 +396,14 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_Reset(COMMAND_LIST_ORIGINAL(R
 	_In_opt_  ID3D12PipelineState* pInitialState
 )
 {
-	//UnityLog::LogError("Reset command list %p\n", pInitialState);
-	if(This != nullptr)
+	auto result = OrigReset(This, pAllocator, pInitialState);
+	if (SUCCEEDED(result)) {
 		SetCommandListState(This, {});
-	
-	return OrigReset(This, pAllocator, pInitialState);
+		// Reset may replace the vtable and its recording entry points.
+		// Install before Unity starts recording, rather than at submission.
+		_InstallCmdlistHooks(This, "Reset");
+	}
+	return result;
 }
 
 extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
@@ -643,6 +648,7 @@ static bool BindDescriptorTable(ID3D12CommandList* list, CommandListStateData& d
 	CD3DX12_GPU_DESCRIPTOR_HANDLE h(heap->GetGPUDescriptorHandleForHeapStart());
 	h.Offset((myD3D12->srvBaseOffset + myD3D12->getCurrentOffset()) * myD3D12->srvIncrement);
 
+	DescriptorTableInjection injection;
 	if (gfx)
 		COMMAND_LIST_TARGET(list, SetGraphicsRootDescriptorTable)((ID3D12GraphicsCommandList*)list, targetIdx, h);
 	else
@@ -795,36 +801,26 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootDescriptorTable(CO
 	_In_  UINT RootParameterIndex,
 	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor)
 {
-	auto d3d = myD3D12;
-
-	const bool isGfx = false;
-	// This will never return that we are in bindless for non-graphics list.
-	auto dt = GetCommandListState(list);
-	UnityLog::Debug("Set compute root descriptor table: %d %d %d %d\n", RootParameterIndex, dt.getIsInHookedRootSig(isGfx), dt.assignedHookedHeap, dt.getSrvDescId(isGfx));
-
-	if(!BindDescriptorTable(list, dt, isGfx)){
-		OrigSetComputeRootDescriptorTable(list, RootParameterIndex, BaseDescriptor);
-	}
-
-	SetCommandListState(list, dt);
+	ForwardDescriptorTable(
+		[&] { OrigSetComputeRootDescriptorTable(list, RootParameterIndex, BaseDescriptor); },
+		[&] {
+			auto dt = GetCommandListState(list);
+			BindDescriptorTable(list, dt, false);
+			SetCommandListState(list, dt);
+		});
 }
 
 extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(COMMAND_LIST_ORIGINAL(SetGraphicsRootDescriptorTable) ID3D12GraphicsCommandList* list,
 	_In_  UINT RootParameterIndex,
 	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor)
 {
-	auto d3d = myD3D12;
-
-	const bool isGfx = true;
-	// This will never return that we are in bindless for non-graphics list.
-	auto dt = GetCommandListState(list);
-	UnityLog::Debug("Set graphics root descriptor table: %d %d %d %d\n", RootParameterIndex, dt.getIsInHookedRootSig(isGfx), dt.assignedHookedHeap, dt.getSrvDescId(isGfx));
-
-	if (!BindDescriptorTable(list, dt, isGfx)) {
-		OrigSetGraphicsRootDescriptorTable(list, RootParameterIndex, BaseDescriptor);
-	}
-
-	SetCommandListState(list, dt);
+	ForwardDescriptorTable(
+		[&] { OrigSetGraphicsRootDescriptorTable(list, RootParameterIndex, BaseDescriptor); },
+		[&] {
+			auto dt = GetCommandListState(list);
+			BindDescriptorTable(list, dt, true);
+			SetCommandListState(list, dt);
+		});
 }
 #else
 extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateGraphicsPipelineState(
@@ -854,7 +850,14 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_Reset(COMMAND_LIST_ORIGINAL(R
 	_In_opt_  ID3D12PipelineState* pInitialState
 )
 {
-	return OrigReset(This, pAllocator, pInitialState);
+	auto result = OrigReset(This, pAllocator, pInitialState);
+	if (SUCCEEDED(result)) {
+		SetCommandListState(This, {});
+		// Reset may replace the vtable and its recording entry points.
+		// Install before Unity starts recording, rather than at submission.
+		_InstallCmdlistHooks(This, "Reset");
+	}
+	return result;
 }
 
 extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
@@ -953,7 +956,7 @@ static void _InstallCmdlistHooks(void* cmdList, const char* name) {
 			return;
 		}
 
-		UnityLog::Debug("Hooking CommandList functions %s\n", name);
+		UnityLog::Debug("Hooking CommandList functions %s list=%p vtable=%p thread=%lu\n", name, cmdList, vtablePtr, GetCurrentThreadId());
 		_InstallRealCmdlistHooks(vtablePtr, name);
 	}
 }
@@ -970,9 +973,6 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateCommandList(
 	REFIID riid,
 	_COM_Outptr_  void** ppCommandList) 
 {
-	//if (type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
-		UnityLog::Debug("Create command list of type: %d | 0\n", type);
-	//}
 
 #ifdef USE_MINHOOK
 	auto result = original(This, nodeMask, type, pCommandAllocator, pInitialState, riid, ppCommandList);
@@ -998,9 +998,6 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateCommandList1(
 	REFIID riid,
 	_COM_Outptr_  void** ppCommandList) 
 {
-	//if (type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
-		UnityLog::Debug("Create command list of type: %d | 1\n", type);
-	//}
 
 #ifdef USE_MINHOOK
 	auto result = original(This, nodeMask, type, flags, riid, ppCommandList);

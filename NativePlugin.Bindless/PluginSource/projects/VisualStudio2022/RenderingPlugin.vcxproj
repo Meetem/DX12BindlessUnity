@@ -18,6 +18,7 @@
   <ItemGroup>
     <ClInclude Include="..\..\source\D3D12Hooks.h" />
     <ClInclude Include="..\..\source\TargetFunctionHook.h" />
+    <ClInclude Include="..\..\source\DescriptorTableInjection.h" />
     <ClInclude Include="..\..\source\gl3w\gl3w.h" />
     <ClInclude Include="..\..\source\gl3w\glcorearb.h" />
     <ClInclude Include="..\..\source\PlatformBase.h" />
