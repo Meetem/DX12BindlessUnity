@@ -143,6 +143,7 @@ static bool Unprotect(void* addr) {
 
 #ifdef USE_MINHOOK
 #include "MinHook/include/MinHook.h"
+#include "TargetFunctionHook.h"
 
 _forceinline static void* HookVT(void* vtablePtr, int vtableOffset, void* newFunction) {
 	if (vtablePtr == nullptr) {
@@ -207,6 +208,13 @@ static void* Hook(T* obj, int vtableOffset, void* newFunction)
 #endif
 
 #include "D3D12Hooks.h"
+#ifdef USE_MINHOOK
+#define COMMAND_LIST_ORIGINAL(Name) D3D12_##Name Orig##Name,
+#define COMMAND_LIST_TARGET(list, Name) TargetFunctionHook<D3D12_##Name>::Original(*GetVTableEntryPtr(list, __D3D12_VTOFFS_##Name))
+#else
+#define COMMAND_LIST_ORIGINAL(Name)
+#define COMMAND_LIST_TARGET(list, Name) Orig##Name
+#endif
 
 static void _InstallRealCmdlistHooks(void* vtablePtr, const char* name);
 RenderAPI* CreateRenderAPI_D3D12()
@@ -380,7 +388,7 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateComputePipelineState(
 	return res;
 }
 
-extern "C" static HRESULT STDMETHODCALLTYPE Hooked_Reset(
+extern "C" static HRESULT STDMETHODCALLTYPE Hooked_Reset(COMMAND_LIST_ORIGINAL(Reset) 
 	ID3D12GraphicsCommandList1* This,
 	_In_  ID3D12CommandAllocator* pAllocator,
 	_In_opt_  ID3D12PipelineState* pInitialState
@@ -636,15 +644,15 @@ static bool BindDescriptorTable(ID3D12CommandList* list, CommandListStateData& d
 	h.Offset((myD3D12->srvBaseOffset + myD3D12->getCurrentOffset()) * myD3D12->srvIncrement);
 
 	if (gfx)
-		OrigSetGraphicsRootDescriptorTable((ID3D12GraphicsCommandList*)list, targetIdx, h);
+		COMMAND_LIST_TARGET(list, SetGraphicsRootDescriptorTable)((ID3D12GraphicsCommandList*)list, targetIdx, h);
 	else
-		OrigSetComputeRootDescriptorTable(list, targetIdx, h);
+		COMMAND_LIST_TARGET(list, SetComputeRootDescriptorTable)(list, targetIdx, h);
 
 	dt.setIsDescSetAssigned(true, gfx);
 	return true;
 }
 
-static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(ID3D12GraphicsCommandList* This,
+static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(COMMAND_LIST_ORIGINAL(SetGraphicsRootSignature) ID3D12GraphicsCommandList* This,
 	_In_opt_  ID3D12RootSignature* pRootSignature) 
 {
 	OrigSetGraphicsRootSignature(This, pRootSignature);
@@ -671,7 +679,7 @@ static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(ID3D12GraphicsComm
 	SetCommandListState(This, dt);
 }
 
-extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootSignature(ID3D12GraphicsCommandList* This,
+extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootSignature(COMMAND_LIST_ORIGINAL(SetComputeRootSignature) ID3D12GraphicsCommandList* This,
 	_In_opt_  ID3D12RootSignature* pRootSignature) 
 {
 	OrigSetComputeRootSignature(This, pRootSignature);
@@ -697,7 +705,7 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootSignature(ID3D12Gr
 	SetCommandListState(This, dt);
 }
 
-extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(ID3D12GraphicsCommandList* This,
+extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(COMMAND_LIST_ORIGINAL(SetDescriptorHeaps) ID3D12GraphicsCommandList* This,
 	_In_  UINT NumDescriptorHeaps,
 	_In_reads_(NumDescriptorHeaps)  ID3D12DescriptorHeap* const* ppDescriptorHeaps) {
 	
@@ -783,7 +791,7 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(ID3D12Graphic
 	SetCommandListState(This, dt);
 }
 
-extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootDescriptorTable(ID3D12CommandList* list,
+extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootDescriptorTable(COMMAND_LIST_ORIGINAL(SetComputeRootDescriptorTable) ID3D12CommandList* list,
 	_In_  UINT RootParameterIndex,
 	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor)
 {
@@ -801,7 +809,7 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootDescriptorTable(ID
 	SetCommandListState(list, dt);
 }
 
-extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(ID3D12GraphicsCommandList* list,
+extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(COMMAND_LIST_ORIGINAL(SetGraphicsRootDescriptorTable) ID3D12GraphicsCommandList* list,
 	_In_  UINT RootParameterIndex,
 	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor)
 {
@@ -840,7 +848,7 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateComputePipelineState(
 	return res;
 }
 
-extern "C" static HRESULT STDMETHODCALLTYPE Hooked_Reset(
+extern "C" static HRESULT STDMETHODCALLTYPE Hooked_Reset(COMMAND_LIST_ORIGINAL(Reset) 
 	ID3D12GraphicsCommandList1* This,
 	_In_  ID3D12CommandAllocator* pAllocator,
 	_In_opt_  ID3D12PipelineState* pInitialState
@@ -866,33 +874,33 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12De
 	return OrigCreateDescriptorHeap(device, pDescriptorHeapDesc, riid, ppvHeap);
 }
 
-static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(ID3D12GraphicsCommandList* This,
+static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(COMMAND_LIST_ORIGINAL(SetGraphicsRootSignature) ID3D12GraphicsCommandList* This,
 	_In_opt_  ID3D12RootSignature* pRootSignature)
 {
 	OrigSetGraphicsRootSignature(This, pRootSignature);
 }
 
-extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootSignature(ID3D12GraphicsCommandList* This,
+extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootSignature(COMMAND_LIST_ORIGINAL(SetComputeRootSignature) ID3D12GraphicsCommandList* This,
 	_In_opt_  ID3D12RootSignature* pRootSignature)
 {
 	OrigSetComputeRootSignature(This, pRootSignature);
 }
 
-extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(ID3D12GraphicsCommandList* This,
+extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(COMMAND_LIST_ORIGINAL(SetDescriptorHeaps) ID3D12GraphicsCommandList* This,
 	_In_  UINT NumDescriptorHeaps,
 	_In_reads_(NumDescriptorHeaps)  ID3D12DescriptorHeap* const* ppDescriptorHeaps)
 {
 	return OrigSetDescriptorHeaps(This, NumDescriptorHeaps, ppDescriptorHeaps);
 }
 
-extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootDescriptorTable(ID3D12CommandList* list,
+extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootDescriptorTable(COMMAND_LIST_ORIGINAL(SetComputeRootDescriptorTable) ID3D12CommandList* list,
 	_In_  UINT RootParameterIndex,
 	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor)
 {
 	OrigSetComputeRootDescriptorTable(list, RootParameterIndex, BaseDescriptor);
 }
 
-extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(ID3D12GraphicsCommandList* list,
+extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(COMMAND_LIST_ORIGINAL(SetGraphicsRootDescriptorTable) ID3D12GraphicsCommandList* list,
 	_In_  UINT RootParameterIndex,
 	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) 
 {
@@ -901,20 +909,31 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(I
 
 #endif
 
+#ifdef USE_MINHOOK
+#define HookCommandListVtable(vtable, Name) do { \
+    void* target = *GetVTableEntryPtrFromVT(vtable, __D3D12_VTOFFS_##Name); \
+    auto status = TargetFunctionHook<D3D12_##Name>::Install(target, Hooked_##Name); \
+    if (status != MH_OK) { \
+        UnityLog::LogError("Can't hook " #Name " at %p: %s\n", target, MH_StatusToString(status)); \
+    } \
+} while (false)
+#else
+#define HookCommandListVtable(vtable, Name) HookVtableFunc(vtable, Name)
+#endif
 static void _InstallRealCmdlistHooks(void* vtablePtr, const char* name) 
 {
-	HookVtableFunc(vtablePtr, SetDescriptorHeaps);
-	HookVtableFunc(vtablePtr, Reset);
+	HookCommandListVtable(vtablePtr, SetDescriptorHeaps);
+	HookCommandListVtable(vtablePtr, Reset);
 
-	HookVtableFunc(vtablePtr, SetComputeRootDescriptorTable);
-	HookVtableFunc(vtablePtr, SetComputeRootSignature);
+	HookCommandListVtable(vtablePtr, SetComputeRootDescriptorTable);
+	HookCommandListVtable(vtablePtr, SetComputeRootSignature);
 
-	HookVtableFunc(vtablePtr, SetGraphicsRootDescriptorTable);
-	HookVtableFunc(vtablePtr, SetGraphicsRootSignature);
+	HookCommandListVtable(vtablePtr, SetGraphicsRootDescriptorTable);
+	HookCommandListVtable(vtablePtr, SetGraphicsRootSignature);
 }
 
 static void _InstallCmdlistHooks(void* cmdList, const char* name) {
-	if(cmdList == nullptr)
+	if(cmdList == nullptr || ((ID3D12CommandList*)cmdList)->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT)
 		return;
 
 	void* vtablePtr = *(void**)cmdList;
@@ -940,6 +959,9 @@ static void _InstallCmdlistHooks(void* cmdList, const char* name) {
 }
 
 extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateCommandList(
+#ifdef USE_MINHOOK
+	D3D12_CreateCommandList original,
+#endif
 	ID3D12Device* This,
 	_In_  UINT nodeMask,
 	_In_  D3D12_COMMAND_LIST_TYPE type,
@@ -952,8 +974,12 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateCommandList(
 		UnityLog::Debug("Create command list of type: %d | 0\n", type);
 	//}
 
+#ifdef USE_MINHOOK
+	auto result = original(This, nodeMask, type, pCommandAllocator, pInitialState, riid, ppCommandList);
+#else
 	auto result = OrigCreateCommandList(This, nodeMask, type, pCommandAllocator, pInitialState, riid, ppCommandList);
-	if (ppCommandList != nullptr && !FAILED(result)) {
+#endif
+	if (ppCommandList != nullptr && type == D3D12_COMMAND_LIST_TYPE_DIRECT && !FAILED(result)) {
 		_InstallCmdlistHooks(ppCommandList[0], "CreateCommandList0");
 		SetCommandListState((ID3D12CommandList*)ppCommandList[0], {});
 	}
@@ -962,6 +988,9 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateCommandList(
 }
 
 extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateCommandList1(
+#ifdef USE_MINHOOK
+	D3D12_CreateCommandList1 original,
+#endif
 	ID3D12Device4* This,
 	_In_  UINT nodeMask,
 	_In_  D3D12_COMMAND_LIST_TYPE type,
@@ -973,8 +1002,12 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateCommandList1(
 		UnityLog::Debug("Create command list of type: %d | 1\n", type);
 	//}
 
+#ifdef USE_MINHOOK
+	auto result = original(This, nodeMask, type, flags, riid, ppCommandList);
+#else
 	auto result = OrigCreateCommandList1(This, nodeMask, type, flags, riid, ppCommandList);
-	if (ppCommandList != nullptr && !FAILED(result)) {
+#endif
+	if (ppCommandList != nullptr && type == D3D12_COMMAND_LIST_TYPE_DIRECT && !FAILED(result)) {
 		_InstallCmdlistHooks(ppCommandList[0], "CreateCommandList1");
 		SetCommandListState((ID3D12CommandList*)ppCommandList[0], {});
 	}
@@ -997,6 +1030,22 @@ extern "C" static void STDMETHODCALLTYPE Hooked_ExecuteCommandLists(
 
 	OrigExecuteCommandLists(This, NumCommandLists, ppCommandLists);
 }
+
+#ifdef USE_MINHOOK
+template<typename Function, typename Device, typename Handler>
+static void InstallCreationHook(Device* device, unsigned offset, Handler handler) {
+	void* target = *GetVTableEntryPtr(device, offset);
+	auto status = TargetFunctionHook<Function>::Install(target, handler);
+	if (status != MH_OK) {
+		UnityLog::LogError("Can't install command-list creation hook for %p: %s\n", target, MH_StatusToString(status));
+	} else {
+		UnityLog::Debug("Command-list creation hook ready for %p\n", target);
+	}
+}
+#define HookCreationFunc(obj, Name) InstallCreationHook<D3D12_##Name>(obj, __D3D12_VTOFFS_##Name, Hooked_##Name)
+#else
+#define HookCreationFunc(obj, Name) HookGenericFunc(obj, Name)
+#endif
 
 void InstallEarlyD3D12Hooks()
 {
@@ -1030,11 +1079,11 @@ void InstallEarlyD3D12Hooks()
 	// MinHook patches the function code itself, so hooking through a temporary
 	// device covers every device sharing this d3d12.dll, including the one
 	// D3D11On12 creates internally before Unity's device event fires.
-	HookGenericFunc(tempDevice, CreateCommandList);
+	HookCreationFunc(tempDevice, CreateCommandList);
 
 	ID3D12Device4* tempDevice4 = nullptr;
 	if (!FAILED(tempDevice->QueryInterface(IID_PPV_ARGS(&tempDevice4))) && tempDevice4 != nullptr) {
-		HookGenericFunc(tempDevice4, CreateCommandList1);
+		HookCreationFunc(tempDevice4, CreateCommandList1);
 		tempDevice4->Release();
 	}
 
@@ -1143,40 +1192,12 @@ void RenderAPI_D3D12::ProcessDeviceEvent(UnityGfxDeviceEventType type, IUnityInt
 		
 		if (!FAILED(device->QueryInterface(IID_PPV_ARGS(&device4)))) {
 			UnityLog::Log("Supports ID3D12Device4\n");
-			HookGenericFunc(device4, CreateCommandList1);
+			HookCreationFunc(device4, CreateCommandList1);
 		} else {
 			device4 = nullptr;
 		}
 
-		/*
-		ID3D12CommandAllocator* commandAllocator = nullptr;
-		handle_hr_fatal(device->CreateCommandAllocator(
-			D3D12_COMMAND_LIST_TYPE_DIRECT, // Type of command list (DIRECT is common for graphics)
-			IID_PPV_ARGS(&commandAllocator)
-		), "Can't create command allocator.\n");
-
-		ID3D12CommandList* commandList;
-		handle_hr_fatal(device->CreateCommandList(
-			0,                              // Node mask; for single-GPU operation, set to 0
-			D3D12_COMMAND_LIST_TYPE_DIRECT, // Type of command list
-			commandAllocator,         // Command allocator associated with the command list
-			nullptr,                        // Pipeline state (initial, can be nullptr)
-			IID_PPV_ARGS(&commandList)
-		), "Can't create command list");
-
-		ID3D12Device4* device4 = nullptr;
-		if (!FAILED(device->QueryInterface(IID_PPV_ARGS(&device4))))
-		{
-			UnityLog::Log("Has ID3D12Device4");
-			//
-		}
-
-		HookCommandListObject((ID3D12GraphicsCommandList*)commandList);
-		commandList->Release();
-		commandAllocator->Release();
-		*/
-
-		HookDeviceFunc(CreateCommandList);
+		HookCreationFunc(device, CreateCommandList);
 
 		HookDeviceFunc(CreateDescriptorHeap);
 		HookDeviceFunc(CreateRootSignature);
