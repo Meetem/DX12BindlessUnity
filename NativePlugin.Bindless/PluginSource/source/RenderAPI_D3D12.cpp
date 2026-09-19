@@ -12,31 +12,14 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <concurrent_unordered_set.h>
-#include <concurrent_queue.h>
+#include <mutex>
+#include <type_traits>
 
 std::unordered_map<void*, void*> hookedFunctions = {};
 
 concurrency::concurrent_unordered_set<void*> hookedCmdVTables;
-concurrency::concurrent_queue<void*> pendingHookCmdVTables;
-
-std::atomic_flag isCommandListHooking = ATOMIC_FLAG_INIT;
-
-class LockGuard {
-public:
-	__forceinline LockGuard(std::atomic_flag& flag) {
-		this->flg = &flag;
-
-		while (flag.test_and_set(std::memory_order_acquire))
-			_mm_pause();
-	}
-
-	__forceinline ~LockGuard(){
-		flg->clear(std::memory_order_release);
-	}
-
-private:
-	std::atomic_flag* flg;
-};
+static std::unordered_set<void*> pendingHookCmdVTables;
+static std::mutex commandListInstallMutex;
 
 // My data:
 // {CAD4DE65-63E8-4CF6-B82C-6F7EE6776335}
@@ -54,18 +37,11 @@ struct HookedRootSignature {
 	unsigned numMaxBindings;
 };
 
-enum CmdListHookedPipeline {
-	CmdListHookedPipeline_Unset = 0,
-	CmdListHookedPipeline_Set = 1,
-};
-
 const unsigned NoBindless = 0;
 class CommandListStateData {
 protected:
 	unsigned isInHookedCmpRootSig : 1;
 	unsigned isInHookedGfxRootSig : 1;
-	unsigned isHookedCmpDescSetAssigned : 1;
-	unsigned isHookedGfxDescSetAssigned : 1;
 public:
 	unsigned assignedHookedHeap : 16;
 protected:
@@ -77,10 +53,6 @@ public:
 		return gfx ? isInHookedGfxRootSig : isInHookedCmpRootSig;
 	}
 
-	unsigned getIsDescSetAssigned(bool gfx) const {
-		return gfx ? isHookedGfxDescSetAssigned : isHookedCmpDescSetAssigned;
-	}
-
 	unsigned getSrvDescId(bool gfx) const {
 		return gfx ? bindlessGfxSrvDescId : bindlessCmpSrvDescId;
 	}
@@ -89,18 +61,10 @@ public:
 		if(gfx) { isInHookedGfxRootSig = value; } else { isInHookedCmpRootSig = value; };
 	}
 
-	void setIsDescSetAssigned(unsigned value, bool gfx) {
-		if(gfx) { isHookedGfxDescSetAssigned = value; } else { isHookedCmpDescSetAssigned = value; };
-	}
-
 	void setSrvDescId(unsigned value, bool gfx) {
 		if(gfx) { bindlessGfxSrvDescId = value; } else { bindlessCmpSrvDescId = value; };
 	}
 };
-
-// Meetem TODO: Rewrite that to a sorted list,
-// I guess it would be faster since list would be small;
-static std::unordered_map<size_t, HookedRootSignature> hookedDescriptors;
 
 #define ReturnOnFail(x, hr, OnFailureMsg, onFailureReturnValue) hr = x; if(FAILED(hr)){OutputDebugStringA(OnFailureMsg); return onFailureReturnValue;}
 
@@ -217,22 +181,20 @@ static void* Hook(T* obj, int vtableOffset, void* newFunction)
 #define COMMAND_LIST_TARGET(list, Name) Orig##Name
 #endif
 
-static void _InstallRealCmdlistHooks(void* vtablePtr, const char* name);
+static bool _InstallRealCmdlistHooks(void* vtablePtr);
 static void _InstallCmdlistHooks(void* cmdList, const char* name);
 RenderAPI* CreateRenderAPI_D3D12()
 {
 	auto obj = new RenderAPI_D3D12();
-	LockGuard lk(isCommandListHooking);
+	std::lock_guard<std::mutex> lock(commandListInstallMutex);
 	myD3D12 = obj;
 	
-	// install pending hooks.
-	void* vtablePtr = nullptr;
-	while(pendingHookCmdVTables.try_pop(vtablePtr)){
-		if (vtablePtr != nullptr) {
-			_InstallRealCmdlistHooks(vtablePtr, "CreateRenderAPI_D3D12");
-		}
+	// Publish a vtable as installed only after all six hooks are ready.
+	for (void* vtable : pendingHookCmdVTables) {
+		if (_InstallRealCmdlistHooks(vtable))
+			hookedCmdVTables.insert(vtable);
 	}
-
+	pendingHookCmdVTables.clear();
 	return obj;
 }
 
@@ -336,7 +298,7 @@ static inline bool TryGetBindlessData(ID3D12Object* iface, T& outputSig) {
 	return !FAILED(res) && dsize == sizeof(T);
 }
 
-#if 1
+
 extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateGraphicsPipelineState(
 		ID3D12Device* This,
 		_In_  const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc,
@@ -572,7 +534,6 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
 
 	if (needPlaceSrv && !FAILED(ret) && (*ppvRootSignature) != nullptr) {
 		ID3D12RootSignature* sig = (ID3D12RootSignature*)*ppvRootSignature;
-		hookedDescriptors[(size_t)sig] = hookedValue;
 		UnityLog::Debug("Created root desc [s] %p\n", *ppvRootSignature);
 
 		// Set via private data
@@ -632,16 +593,18 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12De
 	return OrigCreateDescriptorHeap(device, &pDescCopy, riid, ppvHeap);
 }
 
-static bool BindDescriptorTable(ID3D12CommandList* list, CommandListStateData& dt, bool gfx)
+template<bool gfx>
+static void BindDescriptorTable(ID3D12CommandList* list, const CommandListStateData& dt,
+	std::conditional_t<gfx, D3D12_SetGraphicsRootDescriptorTable, D3D12_SetComputeRootDescriptorTable> original = nullptr)
 {
-	if (myD3D12->hookedDescriptorHeaps.empty()) {
-		UnityLog::LogWarning("Set*RootDescriptorTable is called, but no srvHeap is set.\n");
-		return false;
-	}
-
 	auto srvId = dt.getSrvDescId(gfx);
 	if (!dt.getIsInHookedRootSig(gfx) || !dt.assignedHookedHeap || srvId == NoBindless)
-		return false;
+		return;
+
+	if (myD3D12->hookedDescriptorHeaps.empty()) {
+		UnityLog::LogWarning("Set*RootDescriptorTable is called, but no srvHeap is set.\n");
+		return;
+	}
 
 	const UINT targetIdx = srvId - 1;
 	auto heap = myD3D12->hookedDescriptorHeaps[dt.assignedHookedHeap - 1];
@@ -649,13 +612,15 @@ static bool BindDescriptorTable(ID3D12CommandList* list, CommandListStateData& d
 	h.Offset((myD3D12->srvBaseOffset + myD3D12->getCurrentOffset()) * myD3D12->srvIncrement);
 
 	DescriptorTableInjection injection;
-	if (gfx)
-		COMMAND_LIST_TARGET(list, SetGraphicsRootDescriptorTable)((ID3D12GraphicsCommandList*)list, targetIdx, h);
-	else
-		COMMAND_LIST_TARGET(list, SetComputeRootDescriptorTable)(list, targetIdx, h);
-
-	dt.setIsDescSetAssigned(true, gfx);
-	return true;
+	if constexpr (gfx) {
+		if (original == nullptr)
+			original = COMMAND_LIST_TARGET(list, SetGraphicsRootDescriptorTable);
+		original((ID3D12GraphicsCommandList*)list, targetIdx, h);
+	} else {
+		if (original == nullptr)
+			original = COMMAND_LIST_TARGET(list, SetComputeRootDescriptorTable);
+		original(list, targetIdx, h);
+	}
 }
 
 static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(COMMAND_LIST_ORIGINAL(SetGraphicsRootSignature) ID3D12GraphicsCommandList* This,
@@ -672,14 +637,12 @@ static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(COMMAND_LIST_ORIGI
 	{
 		dt.setIsInHookedRootSig(true, isGfx);
 		dt.setSrvDescId(d.descriptorId + 1, isGfx);
-		dt.setIsDescSetAssigned(false, isGfx);
-		BindDescriptorTable(This, dt, isGfx);
+		BindDescriptorTable<isGfx>(This, dt);
 	} 
 	else
 	{
 		dt.setIsInHookedRootSig(false, isGfx);
 		dt.setSrvDescId(NoBindless, isGfx);
-		dt.setIsDescSetAssigned(false, isGfx);
 	}
 
 	SetCommandListState(This, dt);
@@ -699,13 +662,11 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootSignature(COMMAND_
 	{
 		dt.setIsInHookedRootSig(true, isGfx);
 		dt.setSrvDescId(d.descriptorId + 1, isGfx);
-		dt.setIsDescSetAssigned(false, isGfx);
-		BindDescriptorTable(This, dt, isGfx);
+		BindDescriptorTable<isGfx>(This, dt);
 	} else
 	{
 		dt.setIsInHookedRootSig(false, isGfx);
 		dt.setSrvDescId(NoBindless, isGfx);
-		dt.setIsDescSetAssigned(false, isGfx);
 	}
 
 	SetCommandListState(This, dt);
@@ -728,8 +689,6 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(COMMAND_LIST_
 		OrigSetDescriptorHeaps(This, NumDescriptorHeaps, ppDescriptorHeaps);
 
 		dt.assignedHookedHeap = 0;
-		dt.setIsDescSetAssigned(false, false);
-		dt.setIsDescSetAssigned(false, true);
 		SetCommandListState(This, dt);
 		return;
 	}
@@ -791,8 +750,6 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(COMMAND_LIST_
 		heaps);
 
 	dt.assignedHookedHeap = assigned;
-	dt.setIsDescSetAssigned(false, false);
-	dt.setIsDescSetAssigned(false, true);
 
 	SetCommandListState(This, dt);
 }
@@ -805,8 +762,7 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootDescriptorTable(CO
 		[&] { OrigSetComputeRootDescriptorTable(list, RootParameterIndex, BaseDescriptor); },
 		[&] {
 			auto dt = GetCommandListState(list);
-			BindDescriptorTable(list, dt, false);
-			SetCommandListState(list, dt);
+			BindDescriptorTable<false>(list, dt, OrigSetComputeRootDescriptorTable);
 		});
 }
 
@@ -818,99 +774,10 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(C
 		[&] { OrigSetGraphicsRootDescriptorTable(list, RootParameterIndex, BaseDescriptor); },
 		[&] {
 			auto dt = GetCommandListState(list);
-			BindDescriptorTable(list, dt, true);
-			SetCommandListState(list, dt);
+			BindDescriptorTable<true>(list, dt, OrigSetGraphicsRootDescriptorTable);
 		});
 }
-#else
-extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateGraphicsPipelineState(
-	ID3D12Device* This,
-	_In_  const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc,
-	REFIID riid,
-	_COM_Outptr_  void** ppPipelineState
-)
-{
-	auto res = OrigCreateGraphicsPipelineState(This, pDesc, riid, ppPipelineState);
-	return res;
-}
 
-extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateComputePipelineState(
-	ID3D12Device* This,
-	_In_  const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc,
-	REFIID riid,
-	_COM_Outptr_  void** ppPipelineState)
-{
-	auto res = OrigCreateComputePipelineState(This, pDesc, riid, ppPipelineState);
-	return res;
-}
-
-extern "C" static HRESULT STDMETHODCALLTYPE Hooked_Reset(COMMAND_LIST_ORIGINAL(Reset) 
-	ID3D12GraphicsCommandList1* This,
-	_In_  ID3D12CommandAllocator* pAllocator,
-	_In_opt_  ID3D12PipelineState* pInitialState
-)
-{
-	auto result = OrigReset(This, pAllocator, pInitialState);
-	if (SUCCEEDED(result)) {
-		SetCommandListState(This, {});
-		// Reset may replace the vtable and its recording entry points.
-		// Install before Unity starts recording, rather than at submission.
-		_InstallCmdlistHooks(This, "Reset");
-	}
-	return result;
-}
-
-extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
-	ID3D12Device* This,
-	_In_  UINT nodeMask,
-	_In_reads_(blobLengthInBytes)  const void* pBlobWithRootSignature,
-	_In_  SIZE_T blobLengthInBytes,
-	REFIID riid,
-	_COM_Outptr_  void** ppvRootSignature) {
-	auto ret = OrigCreateRootSignature(This, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid, ppvRootSignature);
-	return ret;
-}
-
-extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12Device* device, _In_  D3D12_DESCRIPTOR_HEAP_DESC* pDescriptorHeapDesc,
-	REFIID riid,
-	_COM_Outptr_  void** ppvHeap) {
-	return OrigCreateDescriptorHeap(device, pDescriptorHeapDesc, riid, ppvHeap);
-}
-
-static void STDMETHODCALLTYPE Hooked_SetGraphicsRootSignature(COMMAND_LIST_ORIGINAL(SetGraphicsRootSignature) ID3D12GraphicsCommandList* This,
-	_In_opt_  ID3D12RootSignature* pRootSignature)
-{
-	OrigSetGraphicsRootSignature(This, pRootSignature);
-}
-
-extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootSignature(COMMAND_LIST_ORIGINAL(SetComputeRootSignature) ID3D12GraphicsCommandList* This,
-	_In_opt_  ID3D12RootSignature* pRootSignature)
-{
-	OrigSetComputeRootSignature(This, pRootSignature);
-}
-
-extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(COMMAND_LIST_ORIGINAL(SetDescriptorHeaps) ID3D12GraphicsCommandList* This,
-	_In_  UINT NumDescriptorHeaps,
-	_In_reads_(NumDescriptorHeaps)  ID3D12DescriptorHeap* const* ppDescriptorHeaps)
-{
-	return OrigSetDescriptorHeaps(This, NumDescriptorHeaps, ppDescriptorHeaps);
-}
-
-extern "C" static void STDMETHODCALLTYPE Hooked_SetComputeRootDescriptorTable(COMMAND_LIST_ORIGINAL(SetComputeRootDescriptorTable) ID3D12CommandList* list,
-	_In_  UINT RootParameterIndex,
-	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor)
-{
-	OrigSetComputeRootDescriptorTable(list, RootParameterIndex, BaseDescriptor);
-}
-
-extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(COMMAND_LIST_ORIGINAL(SetGraphicsRootDescriptorTable) ID3D12GraphicsCommandList* list,
-	_In_  UINT RootParameterIndex,
-	_In_  D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) 
-{
-	OrigSetGraphicsRootDescriptorTable(list, RootParameterIndex, BaseDescriptor);
-}
-
-#endif
 
 #ifdef USE_MINHOOK
 #define HookCommandListVtable(vtable, Name) do { \
@@ -918,12 +785,13 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetGraphicsRootDescriptorTable(C
     auto status = TargetFunctionHook<D3D12_##Name>::Install(target, Hooked_##Name); \
     if (status != MH_OK) { \
         UnityLog::LogError("Can't hook " #Name " at %p: %s\n", target, MH_StatusToString(status)); \
+        return false; \
     } \
 } while (false)
 #else
 #define HookCommandListVtable(vtable, Name) HookVtableFunc(vtable, Name)
 #endif
-static void _InstallRealCmdlistHooks(void* vtablePtr, const char* name) 
+static bool _InstallRealCmdlistHooks(void* vtablePtr)
 {
 	HookCommandListVtable(vtablePtr, SetDescriptorHeaps);
 	HookCommandListVtable(vtablePtr, Reset);
@@ -933,6 +801,7 @@ static void _InstallRealCmdlistHooks(void* vtablePtr, const char* name)
 
 	HookCommandListVtable(vtablePtr, SetGraphicsRootDescriptorTable);
 	HookCommandListVtable(vtablePtr, SetGraphicsRootSignature);
+	return true;
 }
 
 static void _InstallCmdlistHooks(void* cmdList, const char* name) {
@@ -943,21 +812,21 @@ static void _InstallCmdlistHooks(void* cmdList, const char* name) {
 	if(vtablePtr == nullptr)
 		return;
 
-	// no entry yet.
-	if (hookedCmdVTables.insert(vtablePtr).second)
-	{
-		// insert hooks,
-		// also mark the hooking flag here.
-		LockGuard lk(isCommandListHooking);
-		
-		if (myD3D12 == nullptr) {
-			UnityLog::Log("Delayed CommandList functions %s\n", name);
-			pendingHookCmdVTables.push(vtablePtr);
-			return;
-		}
+	// The common Reset/submission path only reads the completed set. Unlike
+	// insert-before-install, another thread cannot observe a half-hooked table.
+	if (hookedCmdVTables.find(vtablePtr) != hookedCmdVTables.end())
+		return;
 
-		UnityLog::Debug("Hooking CommandList functions %s list=%p vtable=%p thread=%lu\n", name, cmdList, vtablePtr, GetCurrentThreadId());
-		_InstallRealCmdlistHooks(vtablePtr, name);
+	std::lock_guard<std::mutex> lock(commandListInstallMutex);
+	if (hookedCmdVTables.find(vtablePtr) != hookedCmdVTables.end())
+		return;
+	if (myD3D12 == nullptr) {
+		pendingHookCmdVTables.insert(vtablePtr);
+		return;
+	}
+	if (_InstallRealCmdlistHooks(vtablePtr)) {
+		hookedCmdVTables.insert(vtablePtr);
+		UnityLog::Debug("Hooked CommandList vtable=%p via %s\n", vtablePtr, name);
 	}
 }
 
